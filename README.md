@@ -1,6 +1,7 @@
 # nukunai
 nushell polars scripts to analyse kunai logs.
 
+[localImage](./images/explore.gif)
 
 ## requirements 
 nushell (version = 105) and its polars plugins
@@ -56,6 +57,7 @@ polars open  events.log.1408.parquet|polars collect|polars into-nu |explore
 │  # │    events_name    │ events_id │
 ╰────┴───────────────────┴───────────╯
 ```
+
 ## filter kunai events 
 
 ### explore
@@ -123,6 +125,29 @@ polars open events.log.5319.parquet | polars shape
 ╰───┴────────┴─────────╯
 ```
 
+```
+ polars open kunai.jsonl.parquet    | polars schema
+╭──────────────┬─────────────────────────────────╮
+│ ancestors    │ str                             │
+│ command_line │ str                             │
+│              │ ╭────────┬─────╮                │
+│ exe          │ │ file   │ str │                │
+│              │ │ md5    │ str │                │
+│              │ │ sha1   │ str │                │
+│              │ │ sha256 │ str │                │
+│              │ │ sha512 │ str │                │
+│              │ │ size   │ i64 │                │
+│              │ │ error  │ str │                │
+│              │ ╰────────┴─────╯                │
+│              │ ╭──────────┬──────╮             │
+│ dst          │ │ hostname │ str  │             │
+│              │ │ ip       │ str  │             │
+│              │ │ port     │ i64  │             │
+│              │ │ public   │ bool │             │
+│              │ │ is_v6    │ bool │             │
+│              │ ╰──────────┴──────╯             
+```
+
 ### flatten host_container 
 ```
 ❯ polars open events.log.1411.parquet
@@ -130,36 +155,6 @@ polars open events.log.5319.parquet | polars shape
    | polars unnest host
    | polars rename [uuid name container] [host_uuid host_name host_container]
    | polars collect
-╭────────┬────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬─────╮
-│      # │                           ancestors                            │                    command_line                    │                                                                                     exe                                                                                     │ ... │
-├────────┼────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────┤
-│      0 │                                                                │ /lib/systemd/systemd --system --deserialize=17     │ ╭────────┬──────────────────────────╮                                                                                                                                       │ ... │
-│        │                                                                │                                                    │ │ path   │ /usr/lib/systemd/systemd │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ md5    │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha1   │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha256 │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha512 │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ size   │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ error  │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ ╰────────┴──────────────────────────╯                                                                                                                                       │     │
-│      1 │                                                                │ /lib/systemd/systemd --system --deserialize=17     │ ╭────────┬──────────────────────────╮                                                                                                                                       │ ... │
-│        │                                                                │                                                    │ │ path   │ /usr/lib/systemd/systemd │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ md5    │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha1   │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha256 │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha512 │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ size   │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ error  │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ ╰────────┴──────────────────────────╯                                                                                                                                       │     │
-│      2 │                                                                │ /lib/systemd/systemd --system --deserialize=17     │ ╭────────┬──────────────────────────╮                                                                                                                                       │ ... │
-│        │                                                                │                                                    │ │ path   │ /usr/lib/systemd/systemd │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ md5    │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha1   │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha256 │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ sha512 │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ size   │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ │ error  │                          │                                                                                                                                       │     │
-│        │                                                                │                                                    │ ╰────────┴──────────────────────────╯
 
 ```
 ### right way to select containers events
