@@ -82,6 +82,8 @@ save filtered_events in: ./events.log.1384_1_2_61.parquet
 parquet_file: ./events.log.1384.parquet
 parquet_file: ./events.log.1384.parquet
 filter event_id: 1,2,61
+
+polars open  ./events.log.1384.parquet | polars collect | polars into-nu |explore
 ```
 
 ## display events count from file
@@ -215,7 +217,7 @@ polars open events.log.1373.parquet
 │ 0 │ api.crowdsec.net       │        4 │ ╭───┬──────────────╮ │
 │   │                        │          │ │ 0 │ 10.6.255.106 │ │
 │   │                        │          │ ╰───┴──────────────╯ │
-│ 1 │ registry.iutbeziers.fr │     2086 │ ╭───┬──────────────╮ │
+│ 1 │ registry.local         │     2086 │ ╭───┬──────────────╮ │
 │   │                        │          │ │ 0 │ 127.0.0.11   │ │
 │   │                        │          │ │ 1 │ 10.6.255.106 │ │
 │   │                        │          │ ╰───┴──────────────╯ │
