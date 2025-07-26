@@ -15,6 +15,11 @@ nu kunai_to_parquet.nu events.log.1408.gz
 ls |get name|each {nu kunai_to_parquet.nu $in}
 ```
 
+## explore dataset interactively
+```
+polars open  events.log.1408.parquet|polars collect|polars into-nu |explore
+```
+
 ## remember kunai events code:
 ```
 ❯ nu kunai_print_events_table.nu
