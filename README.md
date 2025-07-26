@@ -4,7 +4,7 @@ nushell polars scripts to analyse kunai logs.
 <img src="images/explore.gif" width="150%" >
 
 ## requirements 
-nushell (version = 105) and its polars plugins
+Nushell and its polars plugins
 
 ## transform kunai jsonl files log file to parquet file 
 ```
