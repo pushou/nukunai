@@ -1,7 +1,7 @@
 # nukunai
 nushell polars scripts to analyse kunai logs.
 
-[localImage](./images/explore.gif)
+![](./images/explore.gif)
 
 ## requirements 
 nushell (version = 105) and its polars plugins
