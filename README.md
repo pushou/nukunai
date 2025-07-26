@@ -6,7 +6,7 @@ nushell polars scripts to analyse kunai logs.
 ## requirements 
 nushell (version = 105) and its polars plugins
 
-## transform kunai jsonl files log file 
+## transform kunai jsonl files log file to parquet file 
 ```
 nu kunai_to_parquet.nu events.log.1408.gz
 ╭────┬──────────────────────────────────────────────────────────────────────────────────────────────╮
