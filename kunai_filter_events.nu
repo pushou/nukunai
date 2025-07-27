@@ -66,9 +66,9 @@ def save_filtered_parquet [
                 # flattenize one level and convert to parquet
                 kunai_to_parquet $kunai_events_log_file 
          }
-    try {ls $filtered_file} catch {print $"error creating parquet file ($filtered_file)" ; exit 10} 
     # filter the parquet file
     filter_kunai_parquet  $parquet_file $events_id| polars save ($filtered_file)
+    try {ls $filtered_file} catch {print $"error creating parquet file ($filtered_file)" ; exit 10} 
     exit 0
 }
     
