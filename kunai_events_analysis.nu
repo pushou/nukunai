@@ -35,7 +35,9 @@ def main [
     
     if ($file_extension == 'parquet') { count_by_events_name_parquet $kunai_events_log_file } else {
                             let target_dir = ($kunai_events_log_file | path dirname)
+                            print $"($target_dir)"
                             let unzipped_file = ($target_dir | path join ($kunai_events_log_file |path basename |path parse |get stem))
+                            print $"($unzipped_file)"
                             let kunai_events_log_parquet = $unzipped_file + ".parquet"
                             # flattenize and convert to parquet
                             kunai_to_parquet $kunai_events_log_file --infer-schema $infer_schema

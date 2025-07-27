@@ -4,8 +4,8 @@ nushell polars scripts to analyse/filter kunai logs.
 <img src="images/explore.gif" width="150%" >
 
 ## requirements 
-Nushell and its polars plugins, kunai logs 
-
+Nushell and its blazzing fast polars plugins, kunai logs (install kunai or see ngsoti malware dataset)
+(Satisfactory perf with size of kunai logs files = 500M ) 
 
 ## transform kunai jsonl files log file to parquet file 
 ```
