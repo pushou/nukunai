@@ -34,12 +34,15 @@ def exploring_fdf [
     parquet_file: string
     infer_schema: int 
     events_id: string ] {
+    let ori_dir = ($kunai_events_log_file | path dirname)
+    print $"ori_dir ($ori_dir)"
     print $"kunai_events_log_file file_extension parquet_file infer_schema events_id: ($kunai_events_log_file) ($file_extension) ($parquet_file) ($infer_schema) ($events_id)"
 
     if ($file_extension != 'parquet') {
                 # flattenize one level and convert to parquet
                 kunai_to_parquet $kunai_events_log_file 
          }
+    try {ls $parquet_file} catch {print $"error creating parquet file ($parquet_file)" ; exit 10} 
     # filter the parquet file
      filter_kunai_parquet  $parquet_file $events_id| polars collect |polars into-nu |flatten --all|flatten --all|explore
 }
@@ -63,6 +66,7 @@ def save_filtered_parquet [
                 # flattenize one level and convert to parquet
                 kunai_to_parquet $kunai_events_log_file 
          }
+    try {ls $filtered_file} catch {print $"error creating parquet file ($filtered_file)" ; exit 10} 
     # filter the parquet file
     filter_kunai_parquet  $parquet_file $events_id| polars save ($filtered_file)
     exit 0
@@ -95,7 +99,8 @@ def main [
     print $"main_file_extension = ($file_extension)"
 
     let parquet_file = match $file_extension {
-                          'gz' => {$kunai_events_log_file | path basename |split column '.' |insert fich_name {$in.column1 + '.' + $in.column2 + '.' + $in.column3 + '.parquet'}|get fich_name.0},
+#'gz' => {$kunai_events_log_file | path basename |split column '.' |insert fich_name {$in.column1 + '.' + $in.column2 + '.' + $in.column3 + '.parquet'}|get fich_name.0},
+                          'gz' => {$kunai_events_log_file | path parse|each {$in.parent + "/" + $in.stem + ".parquet"}}
                           'parquet' => { $kunai_events_log_file}
                           _ => {"" }
                          }

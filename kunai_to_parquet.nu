@@ -55,6 +55,7 @@ export def main [
         try {gzip -d --force $kunai_events_log_file } catch {'you must install gzip!'}
         let ori_dir = ($kunai_events_log_file | path dirname)
         let events_log_unzipped = ($ori_dir | path join ($kunai_events_log_file |path basename |path parse |get stem))
+        try {ls $events_log_unzipped } catch {return $"file ($kunai_events_log_file) unzipped error "}
         print $"unzipped file  from ($kunai_events_log_file) to ($events_log_unzipped)"
         save_into_parquet $events_log_unzipped $eager_param $infer_schema $noflat_param  
     } else {save_into_parquet $kunai_events_log_file $eager_param $infer_schema $noflat_param}
