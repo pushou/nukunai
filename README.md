@@ -6,6 +6,9 @@ nushell polars scripts to analyse/filter kunai logs.
 ## requirements 
 Nushell and its polars plugins
 
+## where to find kunai jsonl files
+Install kunai 
+
 ## transform kunai jsonl files log file to parquet file 
 ```
 nu kunai_to_parquet.nu events.log.1408.gz
@@ -18,7 +21,11 @@ ls |get name|each {nu kunai_to_parquet.nu $in}
 
 ## explore dataset interactively
 ```
-polars open  events.log.1408.parquet|polars collect|polars into-nu |explore
+polars open  events.log.1408.parquet
+     | polars collect
+     | polars into-nu 
+     | flatten --all | flatten --all
+     | explore
 ```
 
 ## remember kunai events code:
