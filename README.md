@@ -1,5 +1,5 @@
 # nukunai
-nushell polars scripts to analyse/filter kunai logs.
+nushell polars scripts to analyse/filter kunai logs (jsonl to parquet file).
 
 <img src="images/explore.gif" width="150%" >
 
