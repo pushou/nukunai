@@ -216,7 +216,9 @@ polars open events.log.1373.parquet
 polars open events.log.1373.parquet
     | polars  select query response dns_server_ip
     | polars drop-nulls
-    | polars group-by query|polars agg [(polars col response|polars count) (polars col dns_server_ip|polars unique)]  |polars collect
+    | polars group-by query
+    | polars agg [(polars col response|polars count) (polars col dns_server_ip|polars unique)]
+    | polars collect
 ╭───┬────────────────────────┬──────────┬──────────────────────╮
 │ # │         query          │ response │    dns_server_ip     │
 ├───┼────────────────────────┼──────────┼──────────────────────┤
@@ -231,8 +233,12 @@ polars open events.log.1373.parquet
 │   │                        │          │ │ 0 │ 10.6.255.106 │ │
 │   │                        │          │ ╰───┴──────────────╯ │
 
-polars open kunai.jsonl_61.parquet   | polars  select query response dns_server |polars drop-duplicates
-    | polars group-by query|polars agg [(polars col response|polars count) (polars col dns_server|polars unique)]  |polars collect
+polars open kunai.jsonl_61.parquet
+    | polars  select query response dns_server
+    | polars drop-duplicates
+    | polars group-by query
+    | polars agg [(polars col response|polars count) (polars col dns_server|polars unique)]
+    | polars collect
 ╭───┬───────────────┬──────────┬──────────────────────────────────────────╮
 │ # │     query     │ response │                dns_server                │
 ├───┼───────────────┼──────────┼──────────────────────────────────────────┤
