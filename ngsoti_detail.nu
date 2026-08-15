@@ -5,9 +5,11 @@
 #
 # Deux sorties :
 #  - affichage console en direct des alertes (avec couleurs),
-#  - fichier markdown écrit dans logs/ngsoti/scanresult<TS>/<hash>.md (dans la
-#    directory des logs). Le TS commun à toute une exécution est passé par la
-#    variable d'env SCAN_TS (fixé par le wrapper) ; sinon généré ici.
+#  - fichier markdown écrit dans logs/ngsoti/scanresult<TS>/<descriptif>.md (dans
+#    la directory des logs). Le fichier est nommé à partir des familles de
+#    détection détectées (famille+nombre) précédées du hash court de l'échantillon.
+#    Le TS commun à toute une exécution est passé par la variable d'env SCAN_TS
+#    (fixé par le wrapper) ; sinon généré ici.
 use kunai_detect_compromise.nu *
 
 let file = $env.FILE
@@ -39,6 +41,9 @@ let fams = {
 # Buffer markdown du rapport final (sortie fichier .md).
 mut md_lines = [ $"# Détail des alertes — ($file)" "" ]
 
+# Nombre d'alertes par famille de détection (pour le nom du fichier de sortie).
+mut fam_counts = {}
+
 print $"(ansi cyan)###### Fichier: ($file)(ansi reset)"
 for fam in ($fams | columns) {
   # On reste en polars le plus longtemps possible : les comptages ne sont jamais
@@ -48,6 +53,7 @@ for fam in ($fams | columns) {
   let fam_frame = (do (($fams | get $fam)) $base)
   let shape = ($fam_frame | polars shape | polars into-nu)
   let n = ($shape.0.rows | into int)
+  $fam_counts = ($fam_counts | insert $fam $n)
   print $"(ansi green)== ($fam) — ($n) alertes(ansi reset)"
   $md_lines = ($md_lines | append $"## ($fam) — ($n) alertes" "")
   if $n > 0 {
@@ -67,13 +73,20 @@ for fam in ($fams | columns) {
   $md_lines = ($md_lines | append "")
 }
 
+# Bilan consolidé (IP/ports et URLs de téléchargement) : généré par la procédure
+# report_bilan de kunai_detect_compromise.nu et ajouté en fin de rapport.
+let bilan = (report_bilan $base 50)
+$md_lines = ($md_lines | append $bilan)
+
 # Écrit le rapport markdown dans la directory des logs, sous
-# logs/ngsoti/scanresult<TS>/<hash>.md. Le chemin du log est dérivé du fichier
+# logs/ngsoti/scanresult<TS>/<nom>.md. Le chemin du log est dérivé du fichier
 # d'entrée (ex. logs/ngsoti/<hash>/kunai.jsonl.gz → dossier logs de l'entrée).
 let log_dir = ($file | path dirname | path dirname)
 let out_dir = ($log_dir | path join $"scanresult($ts)")
 mkdir $out_dir
+# Nom du fichier : délégué à la procédure report_basename de
+# kunai_detect_compromise.nu (nom descriptif depuis les familles détectées).
 let hash = ($file | path dirname | path basename)
-let out_file = ($out_dir | path join $"($hash).md")
+let out_file = ($out_dir | path join $"(report_basename $hash $fam_counts).md")
 $md_lines | str join "\n" | save --force $out_file
 print $"(ansi cyan)Rapport markdown écrit : ($out_file)(ansi reset)"

