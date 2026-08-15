@@ -8,7 +8,7 @@
 # Usage:
 #   nu kunai_detect_compromise.nu                                # les 2 derniers fichiers du registry
 #   nu kunai_detect_compromise.nu fichier1.gz fichier2.gz        # fichiers explicites
-#   nu kunai_detect_compromise.nu -n 1                           # 1 seul fichier (le plus récent)
+#   nu kunai_detect_compromise.nu -n 1                           # n'afficher que 1 ligne par famille
 #   nu kunai_detect_compromise.nu -f execve                      # ne lancer qu'une famille
 #   nu kunai_detect_compromise.nu --explore                      # affichage dataframe interactif
 #
