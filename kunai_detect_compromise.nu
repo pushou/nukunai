@@ -647,11 +647,13 @@ def main [
     --explore (-x)                       # affichage dataframe interactif
     --no-json                            # n'écrire que le markdown (pas de .json)
 ] {
-    # fichiers par défaut : les 2 .gz les plus récents du registry
+    # fichiers par défaut : les 2 .gz les plus récents du registry.
+    # On exclut toujours le fichier vivant `events.log` (log non compressé en cours
+    # d'écriture), en plus du filtre sur l'extension .gz.
     let registry_dir = "/run/media/pouchou/SSD2T/ips-ids-siem-pcaps/kunai/kunai_registry/kunai"
     let file_list = if (($files | is-empty)) {
         (ls $registry_dir
-            | where name ends-with '.gz'
+            | where { |e| ($e.name | path basename) != 'events.log' and ($e.name | path basename | str ends-with '.gz') }
             | sort-by modified
             | last 2
             | get name
