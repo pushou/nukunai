@@ -1,4 +1,4 @@
-
+#!/usr/bin/env nu
 # Convert kunai events log file to flatten parquet file - this will not be working for all kunai events log files
 # usage: ls  *.gz |get name |each {nu kunai_to_parquet.nu $in}
 # usage: nu kunai_to_flatten_parquet.nu events.log.4858.parquet

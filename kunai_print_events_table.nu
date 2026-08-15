@@ -1,3 +1,4 @@
+#!/usr/bin/env nu
 #Usage:
 # > nu kunai_kunai_print_events_table.nu 
 # print table of kunai events

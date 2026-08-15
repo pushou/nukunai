@@ -1,3 +1,4 @@
+#!/usr/bin/env nu
 cat  /var/log/kunai/events.log 
    | from json --objects
    | get data
@@ -19,8 +20,8 @@ cat  /var/log/kunai/events.log
 cat  /var/log/kunai/events.log 
    | from json --objects
    | filter {$in.data.command_line !~ "sshd" and $in.data.command_line !~ "/usr/sbin/tc" and $in.data.command_line !~ "mk_docker"}
-   | flatten --all|flatten --all|flatten --all
    | where event_name == "dns_query"
+   | flatten --all|flatten --all|flatten --all
    | explore
 
 
@@ -72,7 +73,8 @@ cat  /var/log/kunai/events.log
    | filter {$in.info.event.name == "execve"}
    | get data 
    | flatten --all 
-   | get command_linegroup-by   event_name --to-table
+   | get command_line
+   | group-by   event_name --to-table
    | uniq -c
 
 cat  /var/log/kunai/events.log 
@@ -128,6 +130,8 @@ cat  /var/log/kunai/events.log
 
 def is-numeric []: string -> bool 
      { $in like '^[+-]?\d+(\.\d*)?$' }
+
+
 cat  /var/log/kunai/events.log
   | from json --objects
   | filter {$in.info.event.name == "file_create"}

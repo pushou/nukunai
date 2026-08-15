@@ -1,3 +1,4 @@
+#!/usr/bin/env nu
 #Usage:
 # > nu kunai_events_analysis.nu events.log.1373.parquet or gzipped   
 # print the number of events by event_name in a kunai events log file

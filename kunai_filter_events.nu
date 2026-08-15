@@ -1,3 +1,4 @@
+#!/usr/bin/env nu
 #Usage:
 # > nu ./events.nu ./eventsreg.log -e 1,5,6 
 # > nu ./events.nu ./eventsreg.log -e 1,5,6 -s
