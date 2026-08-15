@@ -1,4 +1,12 @@
+# Données volumineuses / artefacts
 *.parquet
 *.gz
 *.log
+
+# Répertoire de logs analysés et résultats de scan (à ne jamais versionner)
+logs/
+
+# Configuration locale de sessions / thèmes (UI, non liée aux scripts)
+sessions/
+themes/
 ./kunai_tpot

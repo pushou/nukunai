@@ -18,7 +18,7 @@
 # =====================================================================
 # ---- Contexte machine "registry" (agents/services légitimes) --------
 # =====================================================================
-def cfg [name: string] {
+export def cfg [name: string] {
     match $name {
         # vrais agents / services de la plateforme à retirer du bruit définitivement.
         # On N'y met PAS les outils détournables (docker, chmod, chown, tar, cp, bash...),
@@ -64,7 +64,7 @@ def cfg [name: string] {
 # daemonise son binaire sous systemd (ex. perfctl → "oom_reaper", parent systemd) serait
 # masqué : il n'est ni agent, ni utilitaire, donc il reste DÉTECTÉ quel que soit son parent.
 # Un docker/chmod/curl/perl/python3 lancé par un task inconnu reste donc détecté.
-def not_legit [] {
+export def not_legit [] {
     let legit = ((cfg legit_agents) | polars into-df)
     let utils = ((cfg benign_utilities) | polars into-df)
     let task_legit   = ((polars col task_name) | polars is-in $legit)
@@ -80,7 +80,7 @@ def not_legit [] {
 # =====================================================================
 # ---- Base lazy commune (unnests de base) -----------------------------
 # =====================================================================
-def build_base [file: string, infer_schema: int] {
+export def build_base [file: string, infer_schema: int] {
     let b = (polars open $file -t ndjson --infer-schema $infer_schema
         | polars unnest data info
         # rename event -> event_info AVANT l'unnest pour éviter la collision
@@ -99,14 +99,14 @@ def build_base [file: string, infer_schema: int] {
 }
 
 # filtre court sur le nom d'événement kunai
-def ev [name: string] {
+export def ev [name: string] {
     polars filter ((polars col event_info_name) == $name)
 }
 
 # unnest conditionnel : ne déroule la colonne que si elle existe. Les formats kunai
 # varient (certaines versions n'ont pas socket/src/dns_server/target/prog_type/mapped),
 # un polars unnest sur une colonne absente fait échouer la résolution du plan.
-def unnestif [base, col: string] {
+export def unnestif [base, col: string] {
     let cols = ($base | polars schema | columns)
     if $col in $cols { $base | polars unnest $col -s "_" } else { $base }
 }
@@ -114,7 +114,7 @@ def unnestif [base, col: string] {
 # normalise la colonne chemin d'un mmap executé selon le format kunai :
 # mapped.path (renommé mapped_path par unnestif), ou mapped_file (ancien format).
 # Garantit la présence d'une colonne mapped_path utilisable par la famille mmap_exec.
-def normalize_mapped [base] {
+export def normalize_mapped [base] {
     let cols = ($base | polars schema | columns)
     if "mapped_path" in $cols {
         $base
@@ -127,7 +127,7 @@ def normalize_mapped [base] {
 
 # select parmi une liste en ne gardant que les colonnes réellement présentes dans le
 # lazy frame (les unnest conditionnels exposent des colonnes variables selon le format).
-def cols_keep [cols: list<string>] {
+export def cols_keep [cols: list<string>] {
     let df = $in
     let present = ($df | polars schema | columns)
     let keep = ($cols | where {|c| $c in $present })
@@ -148,7 +148,7 @@ def cols_keep [cols: list<string>] {
 # (ex. kill sans target_task_name) quand l'événement n'existe pas du tout.
 # NB : on ne sélectionne que utc_time avant collect, car certaines colonnes du
 # frame sont typées Int128 par polars et inutilisables en sortie nushell.
-def has_events [base, evname: string] {
+export def has_events [base, evname: string] {
     let n = ($base
         | polars filter ((polars col event_info_name) == $evname)
         | polars select [utc_time]
@@ -158,7 +158,7 @@ def has_events [base, evname: string] {
 
 # retourne un lazy frame vide (0 ligne) sans référence à une colonne d'événement
 # spécifique : utilisé comme sortie "aucune alerte" quand l'événement est absent.
-def empty_like [base] {
+export def empty_like [base] {
     $base
     | polars filter ((polars col event_info_name) == 'kunai__no_such_event')
     | polars select [utc_time]
@@ -167,7 +167,7 @@ def empty_like [base] {
 # =====================================================================
 # ---- FAMILLE execve : exécution suspecte -----------------------------
 # =====================================================================
-def detect_execve [base] {
+export def detect_execve [base] {
     let c_shell = ((polars col command_line) | polars contains "(?:/bin/(?:bash|sh|zsh|ksh) -[ic].*(?:nc |ncat|/dev/tcp/|/dev/udp/|socat)|(?:bash|sh|zsh) -[ic].*(?:/dev/tcp/|/dev/udp/))")
     let c_dl    = ((polars col command_line) | polars contains "(?:curl|wget) .*(?:\\|| \\-o| \\-O).*(?:sh|bash|python3?|perl)")
     let c_obf   = ((polars col command_line) | polars contains "(?:base64 -d|base64 -D|xxd -r|openssl enc|perl -e|python3? -c|php -r)")
@@ -196,7 +196,7 @@ def detect_execve [base] {
 # =====================================================================
 # ---- FAMILLE file_create : persistance / drop -----------------------
 # =====================================================================
-def detect_file_create [base] {
+export def detect_file_create [base] {
     let c_persist = ((polars col main_path) | polars contains "(?:/etc/cron\\.|/var/spool/cron|/etc/systemd/system/|/etc/rc\\.d/|/root/\\.|/home/[^/]+/\\.ssh/|/usr/local/bin/|/usr/bin/[^ ]+\\.old)")
     let c_tmpdl   = ((polars col main_path) | polars contains "(?:/tmp/|/dev/shm/)[^ ]*(?:\\.sh|\\.py|\\.pl|\\.elf|\\.so|\\.bin|\\.out|\\.jar|\\.tar|\\.gz|\\.zip)")
     let c_tmpdir  = ((polars col main_path) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/dev/mqueue/)")
@@ -219,7 +219,7 @@ def detect_file_create [base] {
 # =====================================================================
 # ---- FAMILLE connect : réseau sortant suspect ------------------------
 # =====================================================================
-def detect_connect [base] {
+export def detect_connect [base] {
     let unusual = [4444,4445,6667,31337,9001,8888,8443,1337,2222,161,137,445,9999,49152]
     let unusual_s = ($unusual | polars into-df)
     let c_public = ((polars col dst_public) == true)
@@ -244,7 +244,7 @@ def detect_connect [base] {
 # =====================================================================
 # ---- FAMILLE send_data : exfiltration --------------------------------
 # =====================================================================
-def detect_send_data [base] {
+export def detect_send_data [base] {
     let c_public = ((polars col dst_public) == true)
     let c_big    = ((polars col data_size) > 1000000)
     let c_hi     = ((polars col data_entropy) > 7.5)
@@ -269,7 +269,7 @@ def detect_send_data [base] {
 # =====================================================================
 # ---- FAMILLE dns_query : recon / tunneling ---------------------------
 # =====================================================================
-def detect_dns_query [base] {
+export def detect_dns_query [base] {
     let c_tld    = ((polars col query) | polars contains "(?:\\.tk$|\\.ml$|\\.ga$|\\.cf$|\\.gq$|\\.top$|\\.xyz$|\\.pw$|\\.onion$|\\.i2p$)")
     let c_long   = (((polars col query) | polars str-lengths) > 60)
     let c_nondns = ((((polars col dns_server_ip) | polars is-in (cfg dns_ips | polars into-df)) | polars expr-not))
@@ -293,7 +293,7 @@ def detect_dns_query [base] {
 # =====================================================================
 # ---- FAMILLE kill : perturbation / évasion ---------------------------
 # =====================================================================
-def detect_kill [base] {
+export def detect_kill [base] {
     let c_target = ((polars col target_task_name) | polars contains "(?:docker|containerd|sshd|systemd|wazuh|crowdsec|splunk|check_mk|auditd|cron|agent)")
     let c_hard   = ((polars col signal) == 'SIGKILL')
     if (not (has_events $base 'kill')) { return (empty_like $base) }
@@ -314,7 +314,7 @@ def detect_kill [base] {
 # =====================================================================
 # ---- FAMILLE bpf_prog_load : rootkit / EDR bypass --------------------
 # =====================================================================
-def detect_bpf [base] {
+export def detect_bpf [base] {
     if (not (has_events $base 'bpf_prog_load')) { return (empty_like $base) }
     $base
     | ev 'bpf_prog_load'
@@ -327,7 +327,7 @@ def detect_bpf [base] {
 # =====================================================================
 # ---- FAMILLE mmap_exec : injection / drop-and-run --------------------
 # =====================================================================
-def detect_mmap_exec [base] {
+export def detect_mmap_exec [base] {
     let c_mapped = ((polars col mapped_path) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/proc/self/fd/|memfd:)")
     if (not (has_events $base 'mmap_exec')) { return (empty_like $base) }
 
@@ -349,7 +349,7 @@ def detect_mmap_exec [base] {
 # =====================================================================
 # ---- FAMILLE prctl : évasion (dumpable / seccomp) --------------------
 # =====================================================================
-def detect_prctl [base] {
+export def detect_prctl [base] {
     let c_dump = ((polars col option) == 'PR_SET_DUMPABLE')
     let c_sec  = ((polars col option) == 'PR_SET_SECCOMP')
     if (not (has_events $base 'prctl')) { return (empty_like $base) }
@@ -368,7 +368,7 @@ def detect_prctl [base] {
 # =====================================================================
 # ---- Affichage d'une famille : dataframe nu --------------------------
 # =====================================================================
-def show_family [base, family: string, num: int, explore: bool] {
+export def show_family [base, family: string, num: int, explore: bool] {
     let l2 = (match $family {
         'execve'        => (detect_execve $base)
         'file_create'   => (detect_file_create $base)
