@@ -333,7 +333,7 @@ only benign when they come from a legitimate chain.
 ### Engine usage (`kunai_detect_compromise.nu`)
 
 ```
-# the 2 most recent .gz files of the registry
+# default: the 2 most recent .gz files
 nu kunai_detect_compromise.nu
 
 # explicit files
