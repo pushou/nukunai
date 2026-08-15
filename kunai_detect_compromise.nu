@@ -400,18 +400,29 @@ export def show_family [base, family: string, num: int, explore: bool] {
 # Construit un bilan consolidé à partir des familles réseau et fichiers déjà
 # détectées. Renvoie une liste de lignes markdown à intégrer au rapport :
 #   - IP de destination (publiques / egress) et ports contactés, dédupliqués,
-#     avec le nombre de connexions et les familles de détection concernées ;
+#     avec le nombre de connexions ;
 #   - URLs et commandes de téléchargement de malware (curl/wget … piped) et
 #     fichiers déposés (binaires dans /tmp, /dev/shm, …).
 # Fonctionne en autonome depuis le base brut (re-détecte les familles utiles).
 export def report_bilan [base, num: int = 50] {
-    mut lines = [ "## Bilan — IP, ports et téléchargements" "" ]
-
-    # Familles pertinentes (détection réutilisée pour rester cohérent).
     let connects = (detect_connect $base | polars collect | polars into-nu)
     let sends    = (detect_send_data $base | polars collect | polars into-nu)
     let execves  = (detect_execve $base | polars collect | polars into-nu)
     let files    = (detect_file_create $base | polars collect | polars into-nu)
+    bilan_sections $connects $sends $execves $files $num
+}
+
+# Version "interne" de report_bilan : prend directement les dataframes nushell
+# déjà détectées (connect, send_data, execve, file_create) pour éviter de
+# re-détecter les familles quand on les a déjà comptées (ex. rendu d'un rapport).
+def bilan_sections [
+    connects: list
+    sends: list
+    execves: list
+    files: list
+    num: int
+] {
+    mut lines = [ "## Bilan — IP, ports et téléchargements" "" ]
 
     # ---- 1. IP/port contactés (egress public + ports inhabituels) ----
     let ipports = ((
@@ -476,6 +487,76 @@ export def report_bilan [base, num: int = 50] {
     $lines = ($lines | append "")
 
     $lines
+}
+
+# =====================================================================
+# ---- Rendu d'un rapport complet (familles + bilan) ------------------
+# =====================================================================
+# Détecte l'ensemble des familles UNE seule fois, compte les alertes par famille
+# et construit tout le markdown du rapport (titre + tableau par famille + bilan).
+# Renvoie { md: list<string>, fam_counts: record } :
+#   - md          : lignes markdown à écrire dans le fichier,
+#   - fam_counts  : nb d'alertes par famille (pour le nom descriptif).
+# max_rows borne le nombre de lignes affichées par famille (au-delà, décompte seul).
+export def render_report [base, max_rows: int = 25] {
+    # Détections de toutes les familles (lazy), gardées en mémoire pour éviter de
+    # re-scanner : on compte via polars shape puis on matérialise le tableau.
+    let frames = {
+        execve:        (detect_execve $base)
+        file_create:   (detect_file_create $base)
+        connect:       (detect_connect $base)
+        send_data:     (detect_send_data $base)
+        dns_query:     (detect_dns_query $base)
+        kill:          (detect_kill $base)
+        bpf_prog_load: (detect_bpf $base)
+        mmap_exec:     (detect_mmap_exec $base)
+        prctl:         (detect_prctl $base)
+    }
+
+    let fam_counts = ($frames
+        | items {|fam, frame|
+            { $fam: (($frame | polars shape | polars into-nu).0.rows | into int) }
+        }
+        | reduce -f {} {|it, acc| $acc | merge $it })
+
+    mut md = []
+    for fam in (report_families) {
+        let n = ($fam_counts | get $fam)
+        $md = ($md | append $"## ($fam) — ($n) alertes" "")
+        if $n > 0 {
+            let l2 = (($frames | get $fam) | polars first $max_rows | polars collect | polars into-nu)
+            $md = ($md | append (($l2 | to md) | split row "\n"))
+            let more = $n - $max_rows
+            if $more > 0 { $md = ($md | append $"… et ($more) autres alertes non affichées") }
+        }
+        $md = ($md | append "")
+    }
+
+    # Bilan (IP/ports, URLs, fichiers) réutilise les dataframes déjà détectées.
+    let connects = (($frames | get connect) | polars collect | polars into-nu)
+    let sends    = (($frames | get send_data) | polars collect | polars into-nu)
+    let execves  = (($frames | get execve) | polars collect | polars into-nu)
+    let files    = (($frames | get file_create) | polars collect | polars into-nu)
+    $md = ($md | append (bilan_sections $connects $sends $execves $files 50))
+
+    { md: $md, fam_counts: $fam_counts }
+}
+
+# Écrit le rapport markdown complet d'un échantillon dans
+# logs/ngsoti/scanresult<TS>/<nom>.md, à côté du fichier d'entrée.
+# Le TS est passé par le wrapper (unique pour toute une session) ; sinon généré.
+# Le nom du fichier est délégué à report_basename (descriptif depuis les familles).
+export def write_report [base, file: string, ts?: string] {
+    let ts = ($ts | default (date now | format date "%Y%m%d_%H%M%S"))
+    let rep = (render_report $base 25)
+
+    let log_dir = ($file | path dirname | path dirname)
+    let out_dir = ($log_dir | path join $"scanresult($ts)")
+    mkdir $out_dir
+    let hash = ($file | path dirname | path basename)
+    let out_file = ($out_dir | path join $"(report_basename $hash $rep.fam_counts).md")
+    $rep.md | str join "\n" | save --force $out_file
+    { file: $out_file, fam_counts: $rep.fam_counts }
 }
 
 # =====================================================================
@@ -550,5 +631,10 @@ def main [
         for fam in $families {
             show_family $base $fam $num $explore
         }
+        # Écrit aussi le rapport markdown dans scanresult<TS>/ (même mécanisme
+        # que ngsoti_detail.nu) pour que l'invocation directe produise bien un
+        # fichier de sortie, pas seulement un affichage console.
+        let wrote = (write_report $base $file)
+        print $"(ansi cyan)Rapport écrit : ($wrote.file)(ansi reset)"
     }
 }
