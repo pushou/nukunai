@@ -6,42 +6,45 @@
 #   -h, --help - Display the help message for this command
 #Parameters:
  # kunai events log file <string>
-use ./kunai_to_parquet.nu 
 
+# Compte les évènements par nom depuis un fichier Parquet déjà aplatit.
 def count_by_events_name_parquet [
     eventslogparquet: string ] {
     let kunai_polars_frame = (polars open $eventslogparquet)
     $kunai_polars_frame|polars get event|polars unnest event|polars get name|polars value-counts |polars sort-by [count] -r [true]
 }
 
+# Compte les évènements par nom directement depuis un .gz / ndjson, SANS
+# passer par le format parquet : polars décompresse les .gz nativement via
+# le lecteur ndjson. Unnest de data/info pour exposer la colonne event.
+def count_by_events_name_ndjson [
+    eventslog: string
+    infer_schema: int ] {
+    let frame = (polars open --infer-schema $infer_schema -t ndjson $eventslog
+        | polars unnest data info)
+    $frame
+        | polars get event
+        | polars unnest event
+        | polars get name
+        | polars value-counts
+        | polars sort-by [count] -r [true]
+        | polars collect
+}
 
 def main [
     kunai_events_log_file: string 
     --infer-schema:  int = 200000 # Number of rows to infer schema. under 200000 it failed
-    --lazy # eager mode is the default (*6 faster than lazy mode but use a lot of ram) 
+    --lazy # kept for backward compatibility (no-op: gz read directly, always collected)
     ] {
-    
-    let eager_param  = match $lazy {
-        true => {"--lazy"}
-        false => {"--eager"}
-    }  
     
     # file exists check
     try {ls ($kunai_events_log_file)} catch {return $"file ($kunai_events_log_file) not found"}
     let file_extension = ($kunai_events_log_file | path parse | get extension)
 
-    # let table_events = kunai config --list-events|from ssv --noheaders |insert events_name {each {$in.column0|str replace ':' ''}}|rename column1 events_id|move events_id --after events_name|reject column1
-    # let list_events_id = $table_events | get events_id | into int
-    # let list_events_name = $table_events | get events_name    
-    
-    if ($file_extension == 'parquet') { count_by_events_name_parquet $kunai_events_log_file } else {
-                            let target_dir = ($kunai_events_log_file | path dirname)
-                            print $"($target_dir)"
-                            let unzipped_file = ($target_dir | path join ($kunai_events_log_file |path basename |path parse |get stem))
-                            print $"($unzipped_file)"
-                            let kunai_events_log_parquet = $unzipped_file + ".parquet"
-                            # flattenize and convert to parquet
-                            kunai_to_parquet $kunai_events_log_file --infer-schema $infer_schema
-                            # extract events
-                            count_by_events_name_parquet $kunai_events_log_parquet }
+    if ($file_extension == 'parquet') {
+        count_by_events_name_parquet $kunai_events_log_file
+    } else {
+        # .gz (ou ndjson brut) : lecture directe, pas de conversion parquet
+        count_by_events_name_ndjson $kunai_events_log_file $infer_schema
     }
+}

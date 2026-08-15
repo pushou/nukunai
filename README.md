@@ -66,38 +66,32 @@ polars open  events.log.1408.parquet
 
 ## filter kunai events 
 
+The filter accepts both a gzipped kunai log (`.gz`) and an already flattened
+`.parquet` file. A `.gz` input is read directly (polars decompresses it natively
+via the ndjson reader), so no intermediate parquet file is created.
+
 ### explore
 ```
-nu filter_events.nu kunai.jsonl.parquet ./events.log.1521.gz -e 1,2,61
+nu kunai_filter_events.nu ./events.log.1521.gz -e 1,2,61
 main_file_extension = gz
-parquet_file_main events.log.1521.parquet
-kunai_events_log_file file_extension parquet_file infer_schema events_id: ./events.log.1521.gz gz events.log.1521.parquet 200000 1,2,61
-unzipped file  from ./events.log.1521.gz to ./events.log.1521
-converting  ./events.log.1521 to ./events.log.1521.parquet --eager infer-schema=200000 flat=flat
-parquet_file: events.log.1521.parquet
 filter event_id: 1,2,61
 ```
+This opens an interactive `explore` on the filtered events.
 
 ### -s save filters events to parquet file 
 ```
-nu filter_events.nu kunai.jsonl.parquet ./events.log.1521.gz -e 1,2,61 -s
-main_file_extension = parquet
-parquet_file_main ./events.log.1384.parquet
-kunai_events_log_file unzipped_file file_extension parquet_file infer_schema events_id: ./events.log.1384.parquet ./events.log.1384 parquet ./events.log.1384.parquet 200000 1,2,61
-save filtered_events in: ./events.log.1384_1_2_61.parquet
-parquet_file: ./events.log.1384.parquet
-parquet_file: ./events.log.1384.parquet
+nu kunai_filter_events.nu ./events.log.1521.gz -e 1,2,61 -s
+main_file_extension = gz
+save filtered_events in: events.log.1521_1_2_61.parquet
 filter event_id: 1,2,61
 
-polars open  ./events.log.1384.parquet | polars collect | polars into-nu |explore
+polars open  ./events.log.1521_1_2_61.parquet | polars collect | polars into-nu |explore
 ```
 
 ## display events count from file
 
 ```
 nu kunai_events_analysis.nu ./events.log.1503.gz
-unzipped file  from ./events.log.1503.gz to ./events.log.1503
-converting  ./events.log.1503 to ./events.log.1503.parquet --eager infer-schema=200000 flat=flat
 ╭────┬───────────────┬────────╮
 │  # │     name      │ count  │
 ├────┼───────────────┼────────┤
