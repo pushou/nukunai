@@ -422,8 +422,54 @@ def bilan_sections [
     files: list
     num: int
 ] {
+    let data = (bilan_data $connects $sends $execves $files $num)
     mut lines = [ "## Bilan — IP, ports et téléchargements" "" ]
 
+    $lines = ($lines | append "### IP / ports détectés")
+    if ($data.ipports | is-empty) {
+        $lines = ($lines | append "_Aucune connexion sortante suspecte détectée._")
+    } else {
+        $lines = ($lines | append [ "| IP | Port | Connexions |" "|---|---|---|" ])
+        for r in ($data.ipports | first $num) {
+            $lines = ($lines | append $"| ($r.ip) | ($r.port) | ($r.count) |")
+        }
+        if ($data.ipports | length) > $num {
+            $lines = ($lines | append $"… et (($data.ipports | length) - $num) autres couples IP:port")
+        }
+    }
+    $lines = ($lines | append "")
+
+    $lines = ($lines | append "### URLs de téléchargement")
+    if ($data.urls | is-empty) {
+        $lines = ($lines | append "_Aucune URL de téléchargement détectée dans les commandes._")
+    } else {
+        for u in ($data.urls | first $num) { $lines = ($lines | append $"- `($u)`") }
+    }
+    $lines = ($lines | append "")
+
+    $lines = ($lines | append "### Fichiers déposés / persistants")
+    if ($data.files | is-empty) {
+        $lines = ($lines | append "_Aucun fichier suspect déposé._")
+    } else {
+        for p in ($data.files | first $num) { $lines = ($lines | append $"- `($p)`") }
+    }
+    $lines = ($lines | append "")
+
+    $lines
+}
+
+# Version structurée (pour le rapport JSON) du bilan : à partir des dataframes
+# connect / send_data / execve / file_create déjà détectées, calcule :
+#   - ipports : couples ip:port contactés avec leur nb de connexions (triés) ;
+#   - urls    : URLs http(s) extraites des command lines (téléchargements) ;
+#   - files   : main_path (fichiers déposés / persistants).
+def bilan_data [
+    connects: list
+    sends: list
+    execves: list
+    files: list
+    num: int
+] {
     # ---- 1. IP/port contactés (egress public + ports inhabituels) ----
     let ipports = ((
             $connects | select dst_ip dst_port
@@ -434,21 +480,8 @@ def bilan_sections [
             { ip: ($rows.0.dst_ip | into string)
               port: ($rows.0.dst_port | into int)
               count: ($rows | length) } }
-        | sort-by count --reverse)
-
-    $lines = ($lines | append "### IP / ports détectés")
-    if ($ip_by_port | is-empty) {
-        $lines = ($lines | append "_Aucune connexion sortante suspecte détectée._")
-    } else {
-        $lines = ($lines | append [ "| IP | Port | Connexions |" "|---|---|---|" ])
-        for r in ($ip_by_port | first $num) {
-            $lines = ($lines | append $"| ($r.ip) | ($r.port) | ($r.count) |")
-        }
-        if ($ip_by_port | length) > $num {
-            $lines = ($lines | append $"… et (($ip_by_port | length) - $num) autres couples IP:port")
-        }
-    }
-    $lines = ($lines | append "")
+        | sort-by count --reverse
+        | first $num)
 
     # ---- 2. URLs de téléchargement de malware ----
     # Extraction des URLs http(s) dans les command lines des alertes execve,
@@ -460,63 +493,54 @@ def bilan_sections [
         | each {|c|
             ($c | split row ' '
                 | where {|w| ($w | str starts-with 'http') }
-                | each {|w| $w | str trim -c '"' | str trim -c "'" }) 
+                | each {|w| $w | str trim -c '"' | str trim -c "'" })
           }
         | flatten
         | where {|w| not ($w | is-empty) }
         | uniq
     )
 
-    $lines = ($lines | append "### URLs de téléchargement")
-    if ($urls | is-empty) {
-        $lines = ($lines | append "_Aucune URL de téléchargement détectée dans les commandes._")
-    } else {
-        for u in ($urls | first $num) { $lines = ($lines | append $"- `($u)`") }
-    }
-    $lines = ($lines | append "")
-
     # ---- 3. Fichiers déposés (drop-and-run, persistance) ----
-    # main_path n'existe que si le format expose des évènements file_create.
     let file_cols = ($files | columns)
-    $lines = ($lines | append "### Fichiers déposés / persistants")
-    if ("main_path" not-in $file_cols) or ($files | is-empty) {
-        $lines = ($lines | append "_Aucun fichier suspect déposé._")
+    let files_deposes = if ("main_path" not-in $file_cols) or ($files | is-empty) {
+        []
     } else {
-        for p in (($files | get main_path | uniq) | first $num) { $lines = ($lines | append $"- `($p)`") }
+        ($files | get main_path | uniq | first $num)
     }
-    $lines = ($lines | append "")
 
-    $lines
+    { ipports: $ip_by_port, urls: $urls, files: $files_deposes }
 }
 
 # =====================================================================
 # ---- Rendu d'un rapport complet (familles + bilan) ------------------
 # =====================================================================
 # Détecte l'ensemble des familles UNE seule fois, compte les alertes par famille
-# et construit tout le markdown du rapport (titre + tableau par famille + bilan).
-# Renvoie { md: list<string>, fam_counts: record } :
-#   - md          : lignes markdown à écrire dans le fichier,
-#   - fam_counts  : nb d'alertes par famille (pour le nom descriptif).
-# max_rows borne le nombre de lignes affichées par famille (au-delà, décompte seul).
+# et construit tout le rapport : le markdown ET les données structurées (utiles
+# au rendu JSON).
+# Renvoie { md, fam_counts, data, bilan } :
+#   - md         : lignes markdown à écrire dans le fichier,
+#   - fam_counts : nb d'alertes par famille (pour le nom descriptif),
+#   - data       : record fam -> liste COMPLÈTE des détections (chaque famille
+#                  matérialisée une seule fois),
+#   - bilan      : structure { ipports, urls, files } pour le rapport JSON.
+# max_rows borne le nombre de lignes AFFICHÉES dans le markdown (au-delà décompte
+# seul) ; le JSON, lui, embarque toutes les détections.
 export def render_report [base, max_rows: int = 25] {
-    # Détections de toutes les familles (lazy), gardées en mémoire pour éviter de
-    # re-scanner : on compte via polars shape puis on matérialise le tableau.
-    let frames = {
-        execve:        (detect_execve $base)
-        file_create:   (detect_file_create $base)
-        connect:       (detect_connect $base)
-        send_data:     (detect_send_data $base)
-        dns_query:     (detect_dns_query $base)
-        kill:          (detect_kill $base)
-        bpf_prog_load: (detect_bpf $base)
-        mmap_exec:     (detect_mmap_exec $base)
-        prctl:         (detect_prctl $base)
+    # Matérialise chaque famille UNE fois en mémoire (liste nu) ; on en dérive
+    # ensuite le décompte, les max_rows du markdown et la liste complète du JSON.
+    let data = {
+        execve:        (detect_execve $base | polars collect | polars into-nu)
+        file_create:   (detect_file_create $base | polars collect | polars into-nu)
+        connect:       (detect_connect $base | polars collect | polars into-nu)
+        send_data:     (detect_send_data $base | polars collect | polars into-nu)
+        dns_query:     (detect_dns_query $base | polars collect | polars into-nu)
+        kill:          (detect_kill $base | polars collect | polars into-nu)
+        bpf_prog_load: (detect_bpf $base | polars collect | polars into-nu)
+        mmap_exec:     (detect_mmap_exec $base | polars collect | polars into-nu)
+        prctl:         (detect_prctl $base | polars collect | polars into-nu)
     }
 
-    let fam_counts = ($frames
-        | items {|fam, frame|
-            { $fam: (($frame | polars shape | polars into-nu).0.rows | into int) }
-        }
+    let fam_counts = ($data | items {|fam, rows| { $fam: ($rows | length) } }
         | reduce -f {} {|it, acc| $acc | merge $it })
 
     mut md = []
@@ -524,8 +548,7 @@ export def render_report [base, max_rows: int = 25] {
         let n = ($fam_counts | get $fam)
         $md = ($md | append $"## ($fam) — ($n) alertes" "")
         if $n > 0 {
-            let l2 = (($frames | get $fam) | polars first $max_rows | polars collect | polars into-nu)
-            $md = ($md | append (($l2 | to md) | split row "\n"))
+            $md = ($md | append (($data | get $fam | first $max_rows | to md) | split row "\n"))
             let more = $n - $max_rows
             if $more > 0 { $md = ($md | append $"… et ($more) autres alertes non affichées") }
         }
@@ -533,30 +556,59 @@ export def render_report [base, max_rows: int = 25] {
     }
 
     # Bilan (IP/ports, URLs, fichiers) réutilise les dataframes déjà détectées.
-    let connects = (($frames | get connect) | polars collect | polars into-nu)
-    let sends    = (($frames | get send_data) | polars collect | polars into-nu)
-    let execves  = (($frames | get execve) | polars collect | polars into-nu)
-    let files    = (($frames | get file_create) | polars collect | polars into-nu)
-    $md = ($md | append (bilan_sections $connects $sends $execves $files 50))
+    let bilan = (bilan_data ($data.connect) ($data.send_data) ($data.execve) ($data.file_create) 50)
+    $md = ($md | append (bilan_sections ($data.connect) ($data.send_data) ($data.execve) ($data.file_create) 50))
 
-    { md: $md, fam_counts: $fam_counts }
+    { md: $md, fam_counts: $fam_counts, data: $data, bilan: $bilan }
 }
 
-# Écrit le rapport markdown complet d'un échantillon dans
-# logs/ngsoti/scanresult<TS>/<nom>.md, à côté du fichier d'entrée.
+# Écrit le rapport d'un échantillon dans logs/ngsoti/scanresult<TS>/<nom>.md ET
+# <nom>.json (JSON activé par défaut; --no-json pour n'écrire que le markdown),
+# à côté du fichier d'entrée.
 # Le TS est passé par le wrapper (unique pour toute une session) ; sinon généré.
 # Le nom du fichier est délégué à report_basename (descriptif depuis les familles).
-export def write_report [base, file: string, ts?: string] {
+export def write_report [base, file: string, ts?: string, --no-json] {
     let ts = ($ts | default (date now | format date "%Y%m%d_%H%M%S"))
     let rep = (render_report $base 25)
+    let json = (not $no_json)
 
     let log_dir = ($file | path dirname | path dirname)
     let out_dir = ($log_dir | path join $"scanresult($ts)")
     mkdir $out_dir
     let hash = ($file | path dirname | path basename)
-    let out_file = ($out_dir | path join $"(report_basename $hash $rep.fam_counts).md")
-    $rep.md | str join "\n" | save --force $out_file
-    { file: $out_file, fam_counts: $rep.fam_counts }
+    let base_name = (report_basename $hash $rep.fam_counts)
+
+    let out_md = ($out_dir | path join $"($base_name).md")
+    $rep.md | str join "\n" | save --force $out_md
+
+    # Rapport JSON structuré (détections complètes + bilan + métadonnées).
+    if $json {
+        let out_json = ($out_dir | path join $"($base_name).json")
+        (report_json $file $ts $rep) | to json | save --force $out_json
+        { md: $out_md, json: $out_json, fam_counts: $rep.fam_counts }
+    } else {
+        { md: $out_md, fam_counts: $rep.fam_counts }
+    }
+}
+
+# Assemble le contenu structuré du rapport JSON : métadonnées (source, hash court,
+# timestamp), décompte par famille, listes complètes des détections par famille
+# et bilan (IP/ports, URLs, fichiers déposés).
+export def report_json [file: string, ts: string, rep: record] {
+    let hash = ($file | path dirname | path basename)
+    {
+        schema_version: 1,
+        generated_at: (date now | format date "%Y-%m-%dT%H:%M:%S%z"),
+        scan_ts: $ts,
+        sample: {
+            file: ($file | path expand),
+            hash: $hash,
+            short_hash: ($hash | str substring 0..7),
+        },
+        fam_counts: $rep.fam_counts,
+        families: $rep.data,
+        bilan: $rep.bilan,
+    }
 }
 
 # =====================================================================
@@ -593,6 +645,7 @@ def main [
     --num (-n): int = 20                 # nb de lignes affichées par famille
     --family (-f): string = "all"        # all ou une famille
     --explore (-x)                       # affichage dataframe interactif
+    --no-json                            # n'écrire que le markdown (pas de .json)
 ] {
     # fichiers par défaut : les 2 .gz les plus récents du registry
     let registry_dir = "/run/media/pouchou/SSD2T/ips-ids-siem-pcaps/kunai/kunai_registry/kunai"
@@ -607,6 +660,10 @@ def main [
 
     let nf = ($file_list | length)
     print $"(ansi cyan)🔍 Détection de compromission — ($nf) fichiers(ansi reset)"
+
+    # Timestamp unique de session : tous les échantillons partagent le même
+    # dossier scanresult<TS> (comme les wrappers ngsoti_all/ngsoti_detail).
+    let scan_ts = (date now | format date "%Y%m%d_%H%M%S")
 
     let families = if $family == 'all' {
         ['execve','file_create','connect','send_data','dns_query','kill','bpf_prog_load','mmap_exec','prctl']
@@ -631,10 +688,14 @@ def main [
         for fam in $families {
             show_family $base $fam $num $explore
         }
-        # Écrit aussi le rapport markdown dans scanresult<TS>/ (même mécanisme
-        # que ngsoti_detail.nu) pour que l'invocation directe produise bien un
-        # fichier de sortie, pas seulement un affichage console.
-        let wrote = (write_report $base $file)
-        print $"(ansi cyan)Rapport écrit : ($wrote.file)(ansi reset)"
+        # Écrit aussi le rapport markdown (+ JSON par défaut) dans scanresult<TS>/
+        # (même mécanisme que ngsoti_detail.nu) pour que l'invocation directe
+        # produise bien des fichiers de sortie, pas seulement un affichage console.
+        let wrote = (write_report $base $file $scan_ts --no-json=$no_json)
+        if $no_json {
+            print $"(ansi cyan)Rapport écrit : ($wrote.md)(ansi reset)"
+        } else {
+            print $"(ansi cyan)Rapport écrit : ($wrote.md)\nJSON : ($wrote.json)(ansi reset)"
+        }
     }
 }
