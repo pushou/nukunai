@@ -297,22 +297,13 @@ polars open  events.log.1502.parquet
 
 ---
 
-## Compromise detection on the NGSOTI dataset
+## Compromise detection engine (`kunai_detect_compromise.nu`)
 
-The scripts below analyse the kunai logs of the
-[ngsoti](https://github.com/cert-orangecyberdefense/ngsoti) malware dataset to
-detect suspicious behaviour. Unlike the previous tools, they read the
-`.jsonl.gz` files directly in lazy polars, **without going through the Parquet
-format**, and produce readable reports.
-
-### Files
-
-| File | Role |
-|------|------|
-| `kunai_detect_compromise.nu` | **Engine** : detection (9 families), IP/ports & URLs balance sheet, markdown + JSON rendering, reusable procedures |
-| `ngsoti_detail.nu` | Detailed report for one sample (one file via `FILE`) → `.md` + `.json` |
-| `ngsoti_all.nu` | Processes every sample of `logs/ngsoti/*/kunai.jsonl.gz` sequentially |
-| `ngsoti_report.nu` | Summary of alerts per family for **all** samples (parallel, 4 cores) |
+`kunai_detect_compromise.nu` is the detection engine behind the NGSOTI
+analysis. Unlike the previous tools, it reads the `.jsonl.gz` files directly
+in lazy polars, **without going through the Parquet format**, and produces
+readable reports. It exposes reusable procedures used by the example scripts
+below.
 
 ### The 9 detection families
 
@@ -324,7 +315,7 @@ standard utilities, local IPs) or **suspicious** based on the task and the
 process chain. Hijackable utilities (`docker`, `chmod`, `curl`, `bash`…) are
 only benign when they come from a legitimate chain.
 
-### Engine usage (`kunai_detect_compromise.nu`)
+### Engine usage
 
 ```
 # default: the 2 most recent .gz files
@@ -346,6 +337,20 @@ nu kunai_detect_compromise.nu --explore
 Options : `--infer-schema <n>` (default 200000), `-n/--num <n>` (lines per
 family, default 20), `-f/--family <fam>`, `-x/--explore`, `--no-json`
 (writes the markdown only).
+
+## Example: NGSOTI logs
+
+The scripts below use the engine to analyse the kunai logs of the
+[ngsoti](https://github.com/cert-orangecyberdefense/ngsoti) malware dataset and
+detect suspicious behaviour.
+
+### Files
+
+| File | Role |
+|------|------|
+| `ngsoti_detail.nu` | Detailed report for one sample (one file via `FILE`) → `.md` + `.json` |
+| `ngsoti_all.nu` | Processes every sample of `logs/ngsoti/*/kunai.jsonl.gz` sequentially |
+| `ngsoti_report.nu` | Summary of alerts per family for **all** samples (parallel, 4 cores) |
 
 ### Produced reports
 
