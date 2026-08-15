@@ -103,6 +103,67 @@ def ev [name: string] {
     polars filter ((polars col event_info_name) == $name)
 }
 
+# unnest conditionnel : ne déroule la colonne que si elle existe. Les formats kunai
+# varient (certaines versions n'ont pas socket/src/dns_server/target/prog_type/mapped),
+# un polars unnest sur une colonne absente fait échouer la résolution du plan.
+def unnestif [base, col: string] {
+    let cols = ($base | polars schema | columns)
+    if $col in $cols { $base | polars unnest $col -s "_" } else { $base }
+}
+
+# normalise la colonne chemin d'un mmap executé selon le format kunai :
+# mapped.path (renommé mapped_path par unnestif), ou mapped_file (ancien format).
+# Garantit la présence d'une colonne mapped_path utilisable par la famille mmap_exec.
+def normalize_mapped [base] {
+    let cols = ($base | polars schema | columns)
+    if "mapped_path" in $cols {
+        $base
+    } else if "mapped_file" in $cols {
+        $base | polars rename [mapped_file] [mapped_path]
+    } else {
+        $base
+    }
+}
+
+# select parmi une liste en ne gardant que les colonnes réellement présentes dans le
+# lazy frame (les unnest conditionnels exposent des colonnes variables selon le format).
+def cols_keep [cols: list<string>] {
+    let df = $in
+    let present = ($df | polars schema | columns)
+    let keep = ($cols | where {|c| $c in $present })
+    if (($keep | length) == 0) {
+        # aucune des colonnes de travail n'existe dans ce format : rien à détecter.
+        # On renvoie un lazy frame vide (0 ligne, colonne sûre utc_time uniquement)
+        # pour ne pas exposer les colonnes Int128 et ne pas crasher le collect.
+        $df
+            | polars filter (polars lit false)
+            | polars select [utc_time]
+    } else {
+        $df | polars select $keep
+    }
+}
+
+# vrai si au moins un événement du nom donné est présent dans le fichier.
+# Coûte une petite collecte mais évite de référencer des colonnes absentes
+# (ex. kill sans target_task_name) quand l'événement n'existe pas du tout.
+# NB : on ne sélectionne que utc_time avant collect, car certaines colonnes du
+# frame sont typées Int128 par polars et inutilisables en sortie nushell.
+def has_events [base, evname: string] {
+    let n = ($base
+        | polars filter ((polars col event_info_name) == $evname)
+        | polars select [utc_time]
+        | polars collect | polars into-nu | length)
+    $n > 0
+}
+
+# retourne un lazy frame vide (0 ligne) sans référence à une colonne d'événement
+# spécifique : utilisé comme sortie "aucune alerte" quand l'événement est absent.
+def empty_like [base] {
+    $base
+    | polars filter ((polars col event_info_name) == 'kunai__no_such_event')
+    | polars select [utc_time]
+}
+
 # =====================================================================
 # ---- FAMILLE execve : exécution suspecte -----------------------------
 # =====================================================================
@@ -112,6 +173,7 @@ def detect_execve [base] {
     let c_obf   = ((polars col command_line) | polars contains "(?:base64 -d|base64 -D|xxd -r|openssl enc|perl -e|python3? -c|php -r)")
     let c_tool  = ((polars col command_line) | polars contains "(?:nmap|masscan|hydra|medusa|john|hashcat|mimikatz|msfconsole|meterpreter|procdump|sqlmap|nikto|dirb|gobuster)")
     let c_tmp   = ((polars col command_line) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/)[^ ]*(?:\\.sh|\\.py|\\.pl|\\.elf|\\.bin|\\.out| )")
+    if (not (has_events $base 'execve')) { return (empty_like $base) }
 
     $base
     | ev 'execve'
@@ -138,11 +200,12 @@ def detect_file_create [base] {
     let c_persist = ((polars col main_path) | polars contains "(?:/etc/cron\\.|/var/spool/cron|/etc/systemd/system/|/etc/rc\\.d/|/root/\\.|/home/[^/]+/\\.ssh/|/usr/local/bin/|/usr/bin/[^ ]+\\.old)")
     let c_tmpdl   = ((polars col main_path) | polars contains "(?:/tmp/|/dev/shm/)[^ ]*(?:\\.sh|\\.py|\\.pl|\\.elf|\\.so|\\.bin|\\.out|\\.jar|\\.tar|\\.gz|\\.zip)")
     let c_tmpdir  = ((polars col main_path) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/dev/mqueue/)")
+    if (not (has_events $base 'file_create')) { return (empty_like $base) }
 
     $base
     | ev 'file_create'
     | polars filter (not_legit)
-    | polars unnest exe -s "_"
+    | (unnestif $in exe)
     | polars select [utc_time task_name task_pid main_path]
     | polars with-column (
         (polars when $c_persist (polars lit "persistence_path")
@@ -161,14 +224,15 @@ def detect_connect [base] {
     let unusual_s = ($unusual | polars into-df)
     let c_public = ((polars col dst_public) == true)
     let c_port   = ((polars col dst_port) | polars is-in $unusual_s)
+    if (not (has_events $base 'connect')) { return (empty_like $base) }
 
     $base
     | ev 'connect'
     | polars filter (not_legit)
-    | polars unnest exe -s "_" | polars unnest socket -s "_" | polars unnest src -s "_" | polars unnest dst -s "_"
+    | (unnestif $in exe) | (unnestif $in socket) | (unnestif $in src) | (unnestif $in dst)
     | polars filter ((polars col dst_ip) | polars is-not-null)
     # dst_public doit être sélectionné pour être utilisable par with-column
-    | polars select [utc_time task_name task_pid command_line src_ip dst_ip dst_port dst_public]
+    | (cols_keep [utc_time task_name task_pid command_line src_ip dst_ip dst_port dst_public])
     | polars with-column (
         (polars when ($c_public) (polars lit "public_egress")
          | polars when $c_port (polars lit "unusual_port")
@@ -184,14 +248,15 @@ def detect_send_data [base] {
     let c_public = ((polars col dst_public) == true)
     let c_big    = ((polars col data_size) > 1000000)
     let c_hi     = ((polars col data_entropy) > 7.5)
+    if (not (has_events $base 'send_data')) { return (empty_like $base) }
 
     $base
     | ev 'send_data'
     | polars filter (not_legit)
-    | polars unnest exe -s "_" | polars unnest src -s "_" | polars unnest dst -s "_"
+    | (unnestif $in exe) | (unnestif $in src) | (unnestif $in dst)
     | polars filter ((polars col dst_ip) | polars is-not-null)
     # dst_public doit être sélectionné pour être utilisable par with-column
-    | polars select [utc_time task_name task_pid command_line src_ip dst_ip dst_port data_size data_entropy dst_public]
+    | (cols_keep [utc_time task_name task_pid command_line src_ip dst_ip dst_port data_size data_entropy dst_public])
     | polars with-column (
         (polars when $c_public (polars lit "public_egress")
          | polars when $c_big (polars lit "large_data")
@@ -208,13 +273,14 @@ def detect_dns_query [base] {
     let c_tld    = ((polars col query) | polars contains "(?:\\.tk$|\\.ml$|\\.ga$|\\.cf$|\\.gq$|\\.top$|\\.xyz$|\\.pw$|\\.onion$|\\.i2p$)")
     let c_long   = (((polars col query) | polars str-lengths) > 60)
     let c_nondns = ((((polars col dns_server_ip) | polars is-in (cfg dns_ips | polars into-df)) | polars expr-not))
+    if (not (has_events $base 'dns_query')) { return (empty_like $base) }
 
     $base
     | ev 'dns_query'
     | polars filter (not_legit)
-    | polars unnest exe -s "_" | polars unnest src -s "_" | polars unnest dns_server -s "_"
+    | (unnestif $in exe) | (unnestif $in src) | (unnestif $in dns_server)
     | polars filter ((polars col query) | polars is-not-null)
-    | polars select [utc_time task_name task_pid command_line query response dns_server_ip]
+    | (cols_keep [utc_time task_name task_pid command_line query response dns_server_ip])
     | polars with-column (
         (polars when $c_long (polars lit "suspicious_length")
          | polars when $c_nondns (polars lit "non_standard_dns_server")
@@ -230,12 +296,13 @@ def detect_dns_query [base] {
 def detect_kill [base] {
     let c_target = ((polars col target_task_name) | polars contains "(?:docker|containerd|sshd|systemd|wazuh|crowdsec|splunk|check_mk|auditd|cron|agent)")
     let c_hard   = ((polars col signal) == 'SIGKILL')
+    if (not (has_events $base 'kill')) { return (empty_like $base) }
 
     $base
     | ev 'kill'
-    | polars unnest exe -s "_" | polars unnest target -s "_" | polars unnest target_exe -s "_" | polars unnest target_task -s "_"
+    | (unnestif $in exe) | (unnestif $in target) | (unnestif $in target_exe) | (unnestif $in target_task)
     | polars filter ((polars col target_task_name) | polars is-not-null)
-    | polars select [utc_time task_name task_pid command_line target_task_name target_task_pid signal]
+    | (cols_keep [utc_time task_name task_pid command_line target_task_name target_task_pid signal])
     | polars with-column (
         (polars when $c_target (polars lit "kill_critical")
          | polars when $c_hard (polars lit "SIGKILL_hard")
@@ -248,11 +315,12 @@ def detect_kill [base] {
 # ---- FAMILLE bpf_prog_load : rootkit / EDR bypass --------------------
 # =====================================================================
 def detect_bpf [base] {
+    if (not (has_events $base 'bpf_prog_load')) { return (empty_like $base) }
     $base
     | ev 'bpf_prog_load'
     | polars filter (not_legit)
-    | polars unnest exe -s "_" | polars unnest prog_type -s "_"
-    | polars select [utc_time task_name task_pid command_line ksym prog_type_name tag]
+    | (unnestif $in exe) | (unnestif $in prog_type)
+    | (cols_keep [utc_time task_name task_pid command_line ksym prog_type_name tag])
     | polars with-column ((polars lit "bpf_by_non_system") | polars as evidence)
 }
 
@@ -261,12 +329,16 @@ def detect_bpf [base] {
 # =====================================================================
 def detect_mmap_exec [base] {
     let c_mapped = ((polars col mapped_path) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/proc/self/fd/|memfd:)")
+    if (not (has_events $base 'mmap_exec')) { return (empty_like $base) }
 
     $base
     | ev 'mmap_exec'
-    | polars unnest exe -s "_" | polars unnest mapped -s "_"
+    | (unnestif $in exe) | (unnestif $in mapped)
+    # selon le format kunai le chemin est exposé `mapped.path` (→ mapped_path)
+    # ou, en plus ancien, directement `mapped_file`. On normalise vers mapped_path.
+    | (normalize_mapped $in)
     | polars filter ((polars col mapped_path) | polars is-not-null)
-    | polars select [utc_time task_name task_pid command_line mapped_path]
+    | (cols_keep [utc_time task_name task_pid command_line mapped_path])
     | polars with-column (
         (polars when $c_mapped (polars lit "mmap_exec_suspicious")
          | polars otherwise (polars lit "none"))
@@ -280,6 +352,7 @@ def detect_mmap_exec [base] {
 def detect_prctl [base] {
     let c_dump = ((polars col option) == 'PR_SET_DUMPABLE')
     let c_sec  = ((polars col option) == 'PR_SET_SECCOMP')
+    if (not (has_events $base 'prctl')) { return (empty_like $base) }
 
     $base
     | ev 'prctl'
