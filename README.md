@@ -303,71 +303,71 @@ polars open  events.log.1502.parquet
 
 ---
 
-## Détection de compromission sur le dataset NGSOTI
+## Compromise detection on the NGSOTI dataset
 
-Les scripts ci-dessous analysent les logs kunai du dataset malware
-[ngsoti](https://github.com/cert-orangecyberdefense/ngsoti) pour détecter des
-comportements suspects. Contrairement aux outils précédents, ils lisent
-directement les fichiers `.jsonl.gz` en lazy polars, **sans passer par le
-format Parquet**, et produisent des rapports lisibles.
+The scripts below analyse the kunai logs of the
+[ngsoti](https://github.com/cert-orangecyberdefense/ngsoti) malware dataset to
+detect suspicious behaviour. Unlike the previous tools, they read the
+`.jsonl.gz` files directly in lazy polars, **without going through the Parquet
+format**, and produce readable reports.
 
-### Fichiers
+### Files
 
-| Fichier | Rôle |
-|---------|------|
-| `kunai_detect_compromise.nu` | **Moteur** : détection (9 familles), bilan IP/ports & URLs, rendu markdown + JSON, procédures réutilisables |
-| `ngsoti_detail.nu` | Rapport détaillé d'un échantillon (un fichier via `FILE`) → `.md` + `.json` |
-| `ngsoti_all.nu` | Traite séquentiellement tous les échantillons de `logs/ngsoti/*/kunai.jsonl.gz` |
-| `ngsoti_report.nu` | Résumé des alertes par famille pour **tous** les échantillons (parallèle, 4 cœurs) |
+| File | Role |
+|------|------|
+| `kunai_detect_compromise.nu` | **Engine** : detection (9 families), IP/ports & URLs balance sheet, markdown + JSON rendering, reusable procedures |
+| `ngsoti_detail.nu` | Detailed report for one sample (one file via `FILE`) → `.md` + `.json` |
+| `ngsoti_all.nu` | Processes every sample of `logs/ngsoti/*/kunai.jsonl.gz` sequentially |
+| `ngsoti_report.nu` | Summary of alerts per family for **all** samples (parallel, 4 cores) |
 
-### Les 9 familles de détection
+### The 9 detection families
 
 `execve`, `file_create`, `connect`, `send_data`, `dns_query`, `kill`,
 `bpf_prog_load`, `mmap_exec`, `prctl`.
 
-Chaque ligne est classée **bénigne** (bruit légitime de la plateforme :
-agents, utilitaires standards, IP locales) ou **suspecte** selon la tâche
-et la chaîne de processus. Les utilitaires détournables (`docker`, `chmod`,
-`curl`, `bash`…) ne sont bénins que s'ils proviennent d'une chaîne légitime.
+Each line is classified as **benign** (legitimate platform noise: agents,
+standard utilities, local IPs) or **suspicious** based on the task and the
+process chain. Hijackable utilities (`docker`, `chmod`, `curl`, `bash`…) are
+only benign when they come from a legitimate chain.
 
-### Usage du moteur (`kunai_detect_compromise.nu`)
+### Engine usage (`kunai_detect_compromise.nu`)
 
 ```
-# les 2 fichiers .gz les plus récents du registry
+# the 2 most recent .gz files of the registry
 nu kunai_detect_compromise.nu
 
-# fichiers explicites
+# explicit files
 nu kunai_detect_compromise.nu fichier1.gz fichier2.gz
 
-# n'afficher que 1 ligne par famille
+# display only 1 line per family
 nu kunai_detect_compromise.nu -n 1
 
-# ne lancer qu'une famille
+# run a single family
 nu kunai_detect_compromise.nu -f execve
 
-# affichage dataframe interactif
+# interactive dataframe display
 nu kunai_detect_compromise.nu --explore
 ```
 
-Options : `--infer-schema <n>` (défaut 200000), `-n/--num <n>` (lignes par
-famille, défaut 20), `-f/--family <fam>`, `-x/--explore`, `--no-json`
-(n'écrit que le markdown).
+Options : `--infer-schema <n>` (default 200000), `-n/--num <n>` (lines per
+family, default 20), `-f/--family <fam>`, `-x/--explore`, `--no-json`
+(writes the markdown only).
 
-### Rapports produits
+### Produced reports
 
-Chaque invocation écrit ses rapports dans `scanresult<TS>/` (dossier commun à
-toute une session), avec un nom descriptif basé sur les familles détectées et
-le hash court de l'échantillon :
+Each run writes its reports into `scanresult<TS>/` (a directory shared by the
+whole session), with a descriptive name based on the detected families and the
+short hash of the sample:
 
 ```
 scanresult20260816_000812/15e67237_execve1_connect35_send_data9286_dns_query2_prctl3.md
 scanresult20260816_000812/15e67237_execve1_connect35_send_data9286_dns_query2_prctl3.json
 ```
 
-- **`.md`** : détail des alertes par famille (25 premières lignes max) + bilan
-  consolidé (IP/ports les plus actifs, URLs de téléchargement, fichiers déposés).
-- **`.json`** (par défaut, `--no-json` pour désactiver) : structure complète et
-  exploitable par programme :
+- **`.md`** : alert details per family (25 first lines max) + consolidated
+  balance sheet (most active IPs/ports, download URLs, dropped files).
+- **`.json`** (default, use `--no-json` to disable) : complete structure that
+  can be consumed by programs:
 
 ```json
 {
@@ -383,22 +383,22 @@ scanresult20260816_000812/15e67237_execve1_connect35_send_data9286_dns_query2_pr
 }
 ```
 
-### Analyses en masse
+### Bulk analysis
 
-**Rapport détaillé d'un échantillon** (via la variable d'env `FILE`) :
+**Detailed report for one sample** (via the `FILE` environment variable):
 ```
 FILE=logs/ngsoti/<hash>/kunai.jsonl.gz nu ngsoti_detail.nu
 ```
 
-**Tous les échantillons, séquentiellement** (mêmes dossiers `scanresult<TS>`) :
+**All samples, sequentially** (same `scanresult<TS>` directories):
 ```
 nu ngsoti_all.nu
 ```
 
-**Résumé rapide pour tous les échantillons** (parallèle, affiche familles + compteurs) :
+**Quick summary for all samples** (parallel, shows families + counters):
 ```
-nu ngsoti_report.nu                    # sortie dans $JCODE_SCRATCH_DIR/ngsoti_out (sinon ./ngsoti_out)
-nu ngsoti_report.nu mon_dossier        # sortie dans mon_dossier
+nu ngsoti_report.nu                    # output into $JCODE_SCRATCH_DIR/ngsoti_out (else ./ngsoti_out)
+nu ngsoti_report.nu my_folder          # output into my_folder
 ```
 
 
