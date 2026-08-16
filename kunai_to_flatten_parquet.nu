@@ -81,12 +81,9 @@ try {
 export def main [
     kunai_events_log_file: string 
     --infer-schema:  int = 200000 # Number of rows to infer schema. under 200000 it failed
-    --lazy # lazy is the Default  but eager mode is *6 faster than lazy mode use a lot of ram 
+    --eager # eager mode is *6 faster than lazy mode but use a lot of ram ; lazy is the default (works everywhere)
 ] {
-    let eager_param  = match $lazy {
-        true => {"--lazy"}
-        false => {"--eager"}
-    }  
+    let eager_param  = if $eager { "--eager" } else { "--lazy" }  
 
     # file exists check
     try {ls ($kunai_events_log_file)} catch {return $"file ($kunai_events_log_file) not found"}
