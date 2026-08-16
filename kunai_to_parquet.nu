@@ -90,15 +90,22 @@ export def main [
     # En mode eager, un .gz compressé ne peut pas être lu directement par polars.
     # On le décompresse vers un fichier TEMPORAIRE (la source .gz reste intacte),
     # on convertit le temp vers le parquet final, puis on supprime le temp.
-    # NB : pas de `try` autour de ce bloc (un try multi-ligne sans catch dans une
-    # `export def` provoquait une erreur de parsing nushell "Command not found").
+    # Le temp est supprimé dans TOUS les cas (même si la conversion échoue, par
+    # ex. épuisement mémoire du plugin polars) : on capture le statut avec try/
+    # catch, on nettoie, puis on réémett l'erreur éventuelle.
     if $file_extension == 'gz' and $eager_param == "--eager" {
         let ori_dir = ($kunai_events_log_file | path dirname)
         let temp_unzipped = ($ori_dir | path join ($kunai_events_log_file | path basename | path parse | get stem)) + ".unzip.tmp"
         ^gzip -dc $kunai_events_log_file o> $temp_unzipped
         print $"unzipped - non destructif - depuis ($kunai_events_log_file) vers ($temp_unzipped)"
-        save_into_parquet $temp_unzipped $eager_param $infer_schema $noflat_param $out
+        let status = (try {
+            save_into_parquet $temp_unzipped $eager_param $infer_schema $noflat_param $out
+            'ok'
+        } catch { |err| $err.msg })
         rm -f $temp_unzipped
+        if $status != 'ok' {
+            error make { msg: $"conversion failed: ($status)", label: { text: "conversion", span: (metadata $kunai_events_log_file).span } }
+        }
     } else {
         save_into_parquet $kunai_events_log_file $eager_param $infer_schema $noflat_param $out
     }
