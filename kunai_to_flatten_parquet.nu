@@ -14,6 +14,27 @@ match $extension {
   }   
 }
 
+def has-col [
+    data: any
+    col: string
+] {
+    let cols: list<string> = ($data | polars columns)
+    $col in $cols
+}
+
+def rename-cols [df: any, specs: list<list<string>>] {
+    mut acc = $df
+    let cols: list<string> = ($df | polars columns)
+    for spec in $specs {
+        let src = ($spec | get 0)
+        let dst = ($spec | get 1)
+        if $src in $cols {
+            $acc = ($acc | polars rename $src $dst)
+        }
+    }
+    $acc
+}
+
 def save_into_parquet [
 eventslog: string 
 eager_param: string
@@ -26,55 +47,47 @@ try {
     if $eager_param == "--lazy" {polars open --infer-schema ($infer_schema_num) -t ndjson ($eventslog)} else  {
                                                 polars open --infer-schema ($infer_schema_num) -t ndjson ($eventslog) --eager} 
     | polars unnest data info
-    | polars rename [command_line task flags path exe] [main_command_line main_task main_flags main_path main_exe]
-    | if ("id" in ($in | polars columns)) { polars rename id main_id } else { $in } #  slowest way if ("id" in ($in | polars columns)) {polars with-column {main_id: (polars col id)}} else {$in}|polars collect 
-    | if ("main_exe" in ($in | polars columns)) {polars unnest main_exe 
-                            | polars rename [path md5 sha1 sha256 sha512 size error] [
-                                main_exe_path main_exe_md5 main_exe_sha1 main_exe_sha256 main_exe_sha512 main_exe_size main_exe_error]} else { $in }
-    | if ("name" in ($in | polars columns)) { polars rename name main_name } else { $in } 
-    | polars unnest dst |polars rename [ip port] [dst_ip dst_port]
+    | rename-cols $in [ ["command_line" "main_command_line"], ["task" "main_task"], ["flags" "main_flags"], ["path" "main_path"], ["exe" "main_exe"] ]
+    | if (has-col $in "id") { polars rename id main_id } else { $in } #  slowest way if (has-col $in "id") {polars with-column {main_id: (polars col id)}} else {$in}|polars collect 
+    | if (has-col $in "main_exe") {polars unnest main_exe 
+                            | rename-cols $in [ ["path" "main_exe_path"], ["md5" "main_exe_md5"], ["sha1" "main_exe_sha1"], ["sha256" "main_exe_sha256"], ["sha512" "main_exe_sha512"], ["size" "main_exe_size"], ["error" "main_exe_error"] ]} else { $in }
+    | if (has-col $in "name") { polars rename name main_name } else { $in } 
+    | polars unnest dst |rename-cols $in [ ["ip" "dst_ip"], ["port" "dst_port"] ]
     | polars unnest socket
-    | polars rename [domain proto type] [socket_domain socket_proto socket_type]
+    | rename-cols $in [ ["domain" "socket_domain"], ["proto" "socket_proto"], ["type" "socket_type"] ]
     | polars unnest src
-    | polars rename [hostname ip port public is_v6] [src_hostname src_ip src_port scr_public src_is_v6]
+    | rename-cols $in [ ["hostname" "src_hostname"], ["ip" "src_ip"], ["port" "src_port"], ["public" "scr_public"], ["is_v6" "src_is_v6"] ]
     | polars unnest target
-    | polars rename [command_line exe task ] [target_command_line target_exe target_task]
+    | rename-cols $in [ ["command_line" "target_command_line"], ["exe" "target_exe"], ["task" "target_task"] ]
     | polars unnest target_task
-    | polars rename [name pid tgid guuid uid user gid group namespaces flags zombie] [
-                     target_task_name target_task_pid target_task_tgid target_task_guuid 
-                     target_task_uid target_task_user target_task_gid target_task_group target_task_namespaces target_task_flags target_task_zombie]
+    | rename-cols $in [ ["name" "target_task_name"], ["pid" "target_task_pid"], ["tgid" "target_task_tgid"], ["guuid" "target_task_guuid"], ["uid" "target_task_uid"], ["user" "target_task_user"], ["gid" "target_task_gid"], ["group" "target_task_group"], ["namespaces" "target_task_namespaces"], ["flags" "target_task_flags"], ["zombie" "target_task_zombie"] ]
     | polars unnest target_exe 
     | polars rename path target_exe_path 
     | polars unnest main_task
-    | polars rename [name pid tgid guuid uid user gid group namespaces flags zombie] [
-                         main_task_name main_task_pid main_task_tgid main_task_guuid main_task_uid main_task_user main_task_gid main_task_group main_task_namespaces main_task_flags main_task_zombie ]
+    | rename-cols $in [ ["name" "main_task_name"], ["pid" "main_task_pid"], ["tgid" "main_task_tgid"], ["guuid" "main_task_guuid"], ["uid" "main_task_uid"], ["user" "main_task_user"], ["gid" "main_task_gid"], ["group" "main_task_group"], ["namespaces" "main_task_namespaces"], ["flags" "main_task_flags"], ["zombie" "main_task_zombie"] ]
     | polars unnest main_task_namespaces
     | polars rename mnt main_task_namespaces_mnt
     | polars unnest host
-    | polars rename [uuid name container] [host_uuid host_name host_container]
+    | rename-cols $in [ ["uuid" "host_uuid"], ["name" "host_name"], ["container" "host_container"] ]
     | polars unnest event
-    | polars rename [source id name uuid batch] [event_source event_id event_name event_uuid event_batch]
-    | if ("parent_task" in ($in | polars columns)) {polars unnest parent_task 
-                        | polars rename [name pid tgid guuid uid user gid group namespaces flags zombie] [
-                          parent_task_name parent_task_pid parent_task_tgid parent_task_guuid parent_task_uid 
-                          parent_task_user parent_task_gid parent_task_group parent_task_namespaces parent_task_flags parent_task_zombie ]} else { $in } 
-    | if ("prog_type" in ($in | polars columns)) {polars unnest prog_type | polars  rename [id name] [prog_type_id prog_type_name]} else { $in } 
-    | if ("host_container" in ($in | polars columns)) {polars unnest  host_container 
-                           | polars rename [name type] [host_container_name host_container_type]} else { $in } 
-    | if ("mapped" in ($in | polars columns)) {polars unnest  mapped 
-                           | polars rename [path md5 sha1 sha256 sha512 size error] [mapped_path mapped_path_md5 
-                             mapped_path_sha1 mapped_path_sha256 mapped_path_sha512 mapped_path_size mapped_path_error]} else { $in }                        
-    | if ("dns_server" in ($in | polars columns)) {polars unnest dns_server 
-                           | polars rename [ip port public is_v6] [dns_server_ip dns_server_port dns_server_public dns_server_is_v6 ]} else { $in } 
-    | if ("target_task_namespaces" in ($in | polars columns)) {polars unnest target_task_namespaces 
-                           | polars rename [mnt] [target_task_namespaces_mnt] } else { $in }
-    | if ("parent_task_namespaces" in ($in | polars columns)) {polars unnest  parent_task_namespaces 
-                           | polars rename [mnt] [parent_task_namespaces_mnt] } else { $in }
-    | if ("interpreter" in ($in | polars columns)) {polars unnest interpreter 
-                           | polars rename [path md5 sha1 sha256 sha512 size error] [interpreter_path interpreter_md5 
-                             interpreter_sha1 interpreter_sha256 interpreter_sha512 interpreter_size interpreter_error]} else { $in }
-    | if ("bpf_prog" in ($in | polars columns)) {polars unnest bpf_prog 
-                           | polars rename [md5 sha1 sha256 sha512 size] [bpf_prog_md5 bpf_prog_sha1 bpf_prog_sha256 bpf_prog_sha512 bpf_prog_size]} else { $in } 
+    | rename-cols $in [ ["source" "event_source"], ["id" "event_id"], ["name" "event_name"], ["uuid" "event_uuid"], ["batch" "event_batch"] ]
+    | if (has-col $in "parent_task") {polars unnest parent_task 
+                        | rename-cols $in [ ["name" "parent_task_name"], ["pid" "parent_task_pid"], ["tgid" "parent_task_tgid"], ["guuid" "parent_task_guuid"], ["uid" "parent_task_uid"], ["user" "parent_task_user"], ["gid" "parent_task_gid"], ["group" "parent_task_group"], ["namespaces" "parent_task_namespaces"], ["flags" "parent_task_flags"], ["zombie" "parent_task_zombie"] ]} else { $in } 
+    | if (has-col $in "prog_type") {polars unnest prog_type | rename-cols $in [ ["id" "prog_type_id"], ["name" "prog_type_name"] ]} else { $in } 
+    | if (has-col $in "host_container") {polars unnest  host_container 
+                           | rename-cols $in [ ["name" "host_container_name"], ["type" "host_container_type"] ]} else { $in } 
+    | if (has-col $in "mapped") {polars unnest  mapped 
+                           | rename-cols $in [ ["path" "mapped_path"], ["md5" "mapped_path_md5"], ["sha1" "mapped_path_sha1"], ["sha256" "mapped_path_sha256"], ["sha512" "mapped_path_sha512"], ["size" "mapped_path_size"], ["error" "mapped_path_error"] ]} else { $in }                        
+    | if (has-col $in "dns_server") {polars unnest dns_server 
+                           | rename-cols $in [ ["ip" "dns_server_ip"], ["port" "dns_server_port"], ["public" "dns_server_public"], ["is_v6" "dns_server_is_v6"] ]} else { $in } 
+    | if (has-col $in "target_task_namespaces") {polars unnest target_task_namespaces 
+                           | rename-cols $in [ ["mnt" "target_task_namespaces_mnt"] ] } else { $in }
+    | if (has-col $in "parent_task_namespaces") {polars unnest  parent_task_namespaces 
+                           | rename-cols $in [ ["mnt" "parent_task_namespaces_mnt"] ] } else { $in }
+    | if (has-col $in "interpreter") {polars unnest interpreter 
+                           | rename-cols $in [ ["path" "interpreter_path"], ["md5" "interpreter_md5"], ["sha1" "interpreter_sha1"], ["sha256" "interpreter_sha256"], ["sha512" "interpreter_sha512"], ["size" "interpreter_size"], ["error" "interpreter_error"] ]} else { $in }
+    | if (has-col $in "bpf_prog") {polars unnest bpf_prog 
+                           | rename-cols $in [ ["md5" "bpf_prog_md5"], ["sha1" "bpf_prog_sha1"], ["sha256" "bpf_prog_sha256"], ["sha512" "bpf_prog_sha512"], ["size" "bpf_prog_size"] ]} else { $in } 
     | polars save -t parquet $parquetfile } catch {|err| $err.msg ; $"converting ($eventslog) to ($parquetfile) failed" }  
 }
 
