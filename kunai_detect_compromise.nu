@@ -71,6 +71,8 @@ export def cfg [name: string] {
             '172.65.', '104.18.', '172.64.',
             # Cloudflare public (misc)
             '104.16.', '104.17.', '104.19.',
+            # Cloudflare IPv6 (crates.io / static.rust-lang.org egress : 2a04:4e42::)
+            '2a04:4e42',
             # Docker Hub / docker.io (production registry mirror : 18.xxx)
             'registry.iutbeziers.fr',
             # NTP/paquets/miroirs locaux de la plateforme (ex. réseau de l'IUT)
@@ -84,20 +86,28 @@ export def cfg [name: string] {
         # (téléchargement de dépendances / dépôts) : rustup, cargo, git, apt, etc.
         "allowlist_egress_procs" => ['rustup','rustup-init','cargo','git','git-remote-http',
                                      'git-remote-https','docker','docker-buildx','dockerd',
-                                     'containerd','apt','apt-get','dpkg','wget','curl','wazuh-agentd']
+                                     'containerd','apt','apt-get','dpkg','wget','curl',
+                                     'ssl_client','wazuh-agentd']
         # Utilitaires / tâches de la chaîne build Rust (client lourd ~/.cargo, ~/.rustup)
         # dont l'exécution depuis /tmp/cargo-*, /tmp/rustc* ou ~/.cargo est BÉNIGNE.
         # Ils compilent/déposent des artefacts dans des répertoires temporaires par
         # conception ; on n'alerte que si le chemin n'est pas l'un de ces répertoires
         # de compilation légitimes (voir allowlist_build_paths).
         "allowlist_build_procs" => ['rustup','rustup-init','cargo','rustc','rustdoc',
-                                    'cc','collect2','ld.lld','rust-lld','cargo-git-checkout',
-                                    'clippy-driver','cargo-clippy','cargo-build']
+                                    'cc','cc1','cc1plus','cc1obj','cc1objplus','as','as1',
+                                    'ar','ranlib','llvm-ar','llvm-ranlib','nm',
+                                    'collect2','ld.lld','rust-lld','cargo-git-checkout',
+                                    'clippy-driver','cargo-clippy','cargo-build',
+                                    # helper d'extraction des toolchains rustup (~/.rustup/tmp/*)
+                                    'CloseHandle']
         # Chemins de compilation / cache légitimes : l'exécution (mmap/exec) ou la
         # création de fichier dans ces préfixes par un process de la chaîne build
         # ci-dessus n'est PAS suspecte.
         "allowlist_build_paths" => [
             '/tmp/cargo-', '/tmp/rustc', '/tmp/tmp.', '/tmp/cargo-install',
+            # scratch GCC/LLVM (assembleur/linker) : /tmp/cc*.s, /tmp/cc*.o,
+            # /tmp/cc*.res, /tmp/cc*.cdtor.*, /tmp/cc*.dbgeng.lto
+            '/tmp/cc', '/tmp/as',
             '/home/nushell/.cargo/', '/home/nushell/.rustup/',
             '/root/.cargo/', '/root/.rustup/',
         ]
@@ -349,20 +359,28 @@ export def detect_execve [base] {
 # =====================================================================
 export def detect_file_create [base] {
     let c_persist = ((polars col main_path) | polars contains "(?:/etc/cron\\.|/var/spool/cron|/etc/systemd/system/|/etc/rc\\.d/|/root/\\.|/home/[^/]+/\\.ssh/|/usr/local/bin/|/usr/bin/[^ ]+\\.old)")
-    let c_tmpdl   = ((polars col main_path) | polars contains "(?:/tmp/|/dev/shm/)[^ ]*(?:\\.sh|\\.py|\\.pl|\\.elf|\\.so|\\.bin|\\.out|\\.jar|\\.tar|\\.gz|\\.zip)")
+    # Limite de mot (\b) après l'extension : évite de matcher ".sh" au début de
+    # "shlex" ou ".so" dans "socks" (artefacts de codegen rustc *.cgu.*.rcgu.o).
+    let c_tmpdl   = ((polars col main_path) | polars contains "(?:/tmp/|/dev/shm/)[^ ]*(?:\\.sh|\\.py|\\.pl|\\.elf|\\.so|\\.bin|\\.out|\\.jar|\\.tar|\\.gz|\\.zip)\\b")
     let c_tmpdir  = ((polars col main_path) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/dev/mqueue/)")
-    # Écriture de fichier dans un répertoire de compilation/agent légitime par la
-    # chaîne build (rustup/cargo/cc/.cargo/.rustup) : temporaire par conception, à
-    # ne PAS traiter comme un drop. L'écriture d'un binaire dans /tmp par un
-    # process non-build (bash curl wget python3, ou un task inconnu) reste OK.
-    let is_build = (is_in_df 'task_name' (cfg allowlist_build_procs))
+    # Zone scratch build/toolchain LÉGITIME : sous ~/.rustup, ~/.cargo, /tmp/cargo-*,
+    # /tmp/cargo-install, /tmp/rustc*, /tmp/cc*, /tmp/tmp.*. Les écritures des threads
+    # de codegen rustc ("opt cgu.*", "coordinator") et de l'extraction rustup
+    # ("tokio-runtime-w") y tombent, ainsi que les .res/.cdtor.* du linker GCC : ce
+    # sont des artefacts de compilation/extraction temporaires, PAS des drops.
+    # Threads internes de codegen LLVM de rustc ("opt cgu.*", "lto cgu.*",
+    # "coordinator") : écrivent les *.cgu.*.rcgu.o dans la zone scratch build.
+    let is_build = ((is_in_df 'task_name' (cfg allowlist_build_procs))
+        or (starts_with_any 'task_name' ['opt cgu','lto cgu','coordinator','rustc_backtrace']))
     let build_path = (starts_with_any 'main_path' (cfg allowlist_build_paths))
-    let benign_write = ($is_build and $build_path)
-    # tmp_dropper = écriture d'un fichier exécutable/depot dans /tmp par un
-    # process non-build (un vrai dropper). tmp_write = tout autre écriture /tmp
-    # non-build dans un répertoire temporaire.
-    let c_tmpdl_build = ($c_tmpdl and ($benign_write | polars expr-not))
-    let c_tmpdir_build = ($c_tmpdir and ($benign_write | polars expr-not))
+    # Par défaut, toute écriture dans une zone scratch build est bénigne (scratch).
+    let benign_zone = $build_path
+    # tmp_dropper = écriture d'un ARTEFACT EXÉCUTABLE (.sh/.so/.elf/.bin…) dans un
+    # répertoire temporaire. On le conserve partout où l'écrivain n'est pas la chaîne
+    # build : même en zone scratch, un binaire déposé par un shell/python/curl non-build
+    # (script téléchargé) reste détecté. tmp_write = tout autre écriture /tmp.
+    let c_tmpdl_real  = ($c_tmpdl and (($benign_zone and $is_build) | polars expr-not))
+    let c_tmpdir_real = ($c_tmpdir and ($benign_zone | polars expr-not))
     if (not (has_events $base 'file_create')) { return (empty_like $base) }
 
     $base
@@ -372,8 +390,8 @@ export def detect_file_create [base] {
     | polars select [utc_time task_name task_pid main_path]
     | polars with-column (
         (polars when $c_persist (polars lit "persistence_path")
-         | polars when $c_tmpdl_build (polars lit "tmp_dropper")
-         | polars when $c_tmpdir_build (polars lit "tmp_write")
+         | polars when $c_tmpdl_real (polars lit "tmp_dropper")
+         | polars when $c_tmpdir_real (polars lit "tmp_write")
          | polars otherwise (polars lit "none"))
         | polars as evidence)
     | polars filter ((polars col evidence) != 'none')
@@ -429,15 +447,16 @@ export def detect_send_data [base] {
     let c_allow_net  = (starts_with_any 'dst_ip' (cfg allowlist_public_networks))
     let c_allow_proc = (is_in_df 'task_name' (cfg allowlist_egress_procs))
     let c_allow_port = ((polars col dst_port) | polars is-in (cfg allowlist_egress_ports | polars into-df))
-    # public_egress suspect : destination publique non allowlistée (téléchargement
-    # légitime vers CDN/dépôt = bénin).
-    let c_egress_susp = ($c_public and (($c_allow_net and $c_allow_proc and $c_allow_port) | polars expr-not))
-    # high_entropy SUSPECTE = envoi à entropie élevée vers l'extérieur (C2/exfil),
-    # pas vers l'interne (agent->manager TLS, docker registry local).
-    let c_hi_susp = ($c_hi and $c_public)
-    # large_data = gros volume sortant vers l'extérieur uniquement (exfil), pas
-    # vers l'interne (synchronisation locale volumineuse).
-    let c_big_susp = ($c_big and $c_public)
+    # egress autorisé = destination publique allowlistée (CDN/dépôt) + process légitime
+    # + port standard. Un tel download vers une cible réputée est bénin, même si le
+    # contenu est chiffré (entropie élevée) : le TLS vers crates.io/GitHub est normal.
+    let c_allow_egress = ($c_allow_net and $c_allow_proc and $c_allow_port)
+    let c_egress_susp = ($c_public and ($c_allow_egress | polars expr-not))
+    # high_entropy / large_data SUSPECTES = envoi vers l'extérieur NON allowlisté
+    # (C2/exfil). Le chiffrement vers une cible réputée (agent->manager TLS interne
+    # ou CDN public) n'est PAS exfiltration.
+    let c_hi_susp  = ($c_hi  and $c_egress_susp)
+    let c_big_susp = ($c_big and $c_egress_susp)
     if (not (has_events $base 'send_data')) { return (empty_like $base) }
 
     $base
