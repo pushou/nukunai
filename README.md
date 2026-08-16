@@ -300,10 +300,12 @@ polars open  events.log.1502.parquet
 ## Compromise detection engine (`kunai_detect_compromise.nu`)
 
 `kunai_detect_compromise.nu` is the detection engine behind the NGSOTI
-analysis. Unlike the previous tools, it reads the `.jsonl.gz` files directly
-in lazy polars, **without going through the Parquet format**, and produces
-readable reports. It exposes reusable procedures used by the example scripts
-below.
+analysis. It reads kunai event files in lazy polars and produces readable
+reports. Three source formats are accepted: raw or compressed JSON lines
+(`.jsonl` / `.jsonl.gz`, read via the ndjson reader) and the Parquet format
+(`.parquet`, e.g. produced by `kunai_to_parquet.nu`, whose `data`/`info`
+fields are already flattened). It exposes reusable procedures used by the
+example scripts below.
 
 ### The 9 detection families
 
@@ -318,11 +320,14 @@ only benign when they come from a legitimate chain.
 ### Engine usage
 
 ```
-# default: the 2 most recent .gz files
+# default: the 2 most recent .gz / .parquet files
 nu kunai_detect_compromise.nu
 
 # explicit files
 nu kunai_detect_compromise.nu fichier1.gz fichier2.gz
+
+# analyse a Parquet file
+nu kunai_detect_compromise.nu kunai.jsonl.parquet
 
 # display only 1 line per family
 nu kunai_detect_compromise.nu -n 1

@@ -2,12 +2,15 @@
 # kunai_detect_compromise.nu
 #
 # Détection de compromission sur les logs kunai de la machine "registry".
-# Analyse directement les fichiers d'événements kunai compressés (.gz), en mode
-# lazy polars, sans passer par le format Parquet.
+# Analyse les fichiers d'événements kunai compressés (.gz), les lignes JSON
+# brutes (.jsonl) et le format Parquet (.parquet), en mode lazy polars.
+# Le .parquet (issu de kunai_to_parquet.nu) est lu directement sans passer par
+# le séparateur ndjson : data/info y sont déjà aplatis.
 #
 # Usage:
 #   nu kunai_detect_compromise.nu                                # les 2 derniers fichiers du registry
 #   nu kunai_detect_compromise.nu fichier1.gz fichier2.gz        # fichiers explicites
+#   nu kunai_detect_compromise.nu fichier.parquet                # analyse un parquet
 #   nu kunai_detect_compromise.nu -n 1                           # n'afficher que 1 ligne par famille
 #   nu kunai_detect_compromise.nu -f execve                      # ne lancer qu'une famille
 #   nu kunai_detect_compromise.nu --explore                      # affichage dataframe interactif
@@ -81,15 +84,28 @@ export def not_legit [] {
 # ---- Base lazy commune (unnests de base) -----------------------------
 # =====================================================================
 export def build_base [file: string, infer_schema: int] {
-    let b = (polars open $file -t ndjson --infer-schema $infer_schema
+    # -- Lecture du fichier source selon son format -----------------------
+    # .gz / .jsonl   : lignes JSON compressées ou non, data/info à dérouler.
+    # .parquet       : déjà aplati (data/info plat), plus de séparateur ndjson.
+    let ext = ($file | path parse | get extension)
+    let base = if $ext == 'parquet' {
+        polars open $file
+    } else {
+        polars open $file -t ndjson --infer-schema $infer_schema
         | polars unnest data info
-        # rename event -> event_info AVANT l'unnest pour éviter la collision
-        # entre data.name/data.id (bpf) et event.name/event.id
-        | polars rename event event_info
-        | polars unnest event_info -s "_"
-        | polars unnest host -s "_"
-        | polars unnest task -s "_"
-        | polars unnest parent_task -s "_")
+    }
+    # -- Structural uns (event/task/host/parent_task) ----------------------
+    # rename event -> event_info AVANT l'unnest pour éviter la collision
+    # entre data.name/data.id (bpf) et event.name/event.id.
+    # Les unnests sont conditionnels : le parquet totalement aplati
+    # (kunai_to_flatten_parquet.nu) n'a plus ces colonnes.
+    let cols = ($base | polars schema | columns)
+    let b = if 'event' in $cols { $base | polars rename event event_info } else { $base }
+    let b = ($b
+        | unnestif $in 'event_info'
+        | unnestif $in 'host'
+        | unnestif $in 'task'
+        | unnestif $in 'parent_task')
     # path -> main_path (chemin du fichier / cible principale).
     # Ce champ n'existe que si au moins un évènement du lot expose un `path`
     # (ex. file_create) : le rename conditionnel évite un crash quand le
@@ -653,7 +669,10 @@ def main [
     let registry_dir = "/run/media/pouchou/SSD2T/ips-ids-siem-pcaps/kunai/kunai_registry/kunai"
     let file_list = if (($files | is-empty)) {
         (ls $registry_dir
-            | where { |e| ($e.name | path basename) != 'events.log' and ($e.name | path basename | str ends-with '.gz') }
+            | where { |e|
+                let n = ($e.name | path basename)
+                $n != 'events.log' and (($n | str ends-with '.gz') or ($n | str ends-with '.parquet'))
+            }
             | sort-by modified
             | last 2
             | get name
