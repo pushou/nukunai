@@ -68,7 +68,9 @@ polars open  events.log.1408.parquet
 
 The filter accepts both a gzipped kunai log (`.gz`) and an already flattened
 `.parquet` file. A `.gz` input is read directly (polars decompresses it natively
-via the ndjson reader), so no intermediate parquet file is created.
+via the ndjson reader), so **no intermediate parquet file is created** here,
+unlike the compromise detection engine (see below), which converts
+`.gz`/`.jsonl` inputs to a parquet file before analysing them.
 
 ### explore
 ```
@@ -301,11 +303,18 @@ polars open  events.log.1502.parquet
 
 `kunai_detect_compromise.nu` is the detection engine behind the NGSOTI
 analysis. It reads kunai event files in lazy polars and produces readable
-reports. Three source formats are accepted: raw or compressed JSON lines
-(`.jsonl` / `.jsonl.gz`, read via the ndjson reader) and the Parquet format
-(`.parquet`, e.g. produced by `kunai_to_parquet.nu`, whose `data`/`info`
-fields are already flattened). It exposes reusable procedures used by the
-example scripts below.
+reports.
+
+**The processing goes through the creation of a Parquet file.** The three
+source formats accepted are raw or compressed JSON lines (`.jsonl` /
+`.jsonl.gz`) and the already-flattened Parquet format (`.parquet`). A
+`.gz`/`.jsonl` input is **automatically converted to a `.parquet` file**
+(`ensure_parquet`, via `kunai_to_parquet.nu`) before analysis: it is written
+next to the source (or into `--cache-dir`), then re-read as Parquet. This is
+far faster than re-parsing the raw ndjson on every run (benchmark ~14x on a
+typical sample). A `.parquet` input is read directly, since its `data`/`info`
+fields are already flattened. The script exposes reusable procedures used by
+the example scripts below.
 
 ### The 9 detection families
 
