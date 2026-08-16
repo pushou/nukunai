@@ -114,6 +114,67 @@ export def build_base [file: string, infer_schema: int] {
     if "path" in $cols { $b | polars rename [path] [main_path] } else { $b }
 }
 
+# =====================================================================
+# ---- Conversion automatique gz/jsonl -> parquet (mode par défaut) ----
+# =====================================================================
+# Un .gz/.jsonl est d'abord converti en .parquet (à côté de la source, ou dans
+# --cache-dir), puis analysé sur le parquet : bien plus rapide que de parser
+# l'ndjson intact à chaque exécution (benchmark ~14x sur un échantillon typique).
+# Comportement par DÉFAUT ; --no-convert (flag global) le désactive pour revenir à
+# la lecture directe historique.
+# Renvoie { file, converted } : file = chemin à analyser, converted = vrai si une
+# conversion a eu lieu (sinon c'était déjà du parquet ou un cache réutilisé).
+export def ensure_parquet [
+    file: string
+    infer_schema: int
+    --force
+    --cache-dir: string
+] {
+    # déjà du parquet : rien à convertir.
+    if ($file | path parse | get extension) == 'parquet' { return { file: $file, converted: false } }
+
+    # Chemin cible du parquet : à côté de la source, ou dans --cache-dir.
+    # Règle convergente (même que default_output de kunai_to_parquet.nu) : on
+    # retire seulement un éventuel `.gz`, on conserve le reste du nom puis on
+    # ajoute `.parquet`, pour qu'un gz et son jsonl décompressé convergent :
+    #   test.jsonl    -> test.jsonl.parquet
+    #   test.jsonl.gz -> test.jsonl.parquet
+    let ext = ($file | path parse | get extension)
+    let target = if $ext == 'gz' {
+        let no_gz = ($file | str replace -r '\.gz$' '')
+        if ($cache_dir | is-not-empty) { ($cache_dir | path join $"($no_gz | path basename).parquet") } else { $"($no_gz).parquet" }
+    } else if ($cache_dir | is-not-empty) {
+        ($cache_dir | path join $"($file | path basename).parquet")
+    } else {
+        $"($file).parquet"
+    }
+
+    # Réutilise le cache s'il existe et est à jour (plus récent que la source),
+    # sauf si --force impose une reconversion.
+    # NB : `metadata` ne renvoie pas les stats de fichier dans ce contexte (juste
+    # un span) ; on lit donc la date de modif réelle via `ls`, dont `.modified?`
+    # est un datetime fiable. On ne compare la fraîcheur que si les deux dates
+    # sont disponibles.
+    if (not $force) and ($target | path exists) {
+        let src_m = ((ls $file).0.modified?)
+        let dst_m = ((ls $target).0.modified?)
+        if ($dst_m | is-not-empty) and ($src_m | is-not-empty) and ($dst_m >= $src_m) {
+            return { file: $target, converted: false }
+        }
+    }
+
+    # Convertit via kunai_to_parquet.nu (sous-processus nu), en écrivant vers la
+    # cible. On passe le flag --lazy selon la RAM dispo : eager par défaut (6x plus
+    # rapide mais gourmand) — le gros du cache restant là, c'est investi une fois.
+    print $"(ansi yellow)⚙ conversion (($file)) → (($target))(ansi reset)"
+    let script = ($env.FILE_PWD | path join "kunai_to_parquet.nu")
+    let res = (^nu $script $file --output $target --infer-schema $infer_schema | complete)
+    if $res.exit_code != 0 {
+        error make { msg: $"échec de conversion de ($file) : ($res.stderr)" }
+    }
+    { file: $target, converted: true }
+}
+
 # filtre court sur le nom d'événement kunai
 export def ev [name: string] {
     polars filter ((polars col event_info_name) == $name)
@@ -662,6 +723,9 @@ def main [
     --family (-f): string = "all"        # all ou une famille
     --explore (-x)                       # affichage dataframe interactif
     --no-json                            # n'écrire que le markdown (pas de .json)
+    --no-convert                         # désactiver la conversion auto gz/jsonl->parquet
+    --force-convert                      # reconvertir même si le cache parquet est à jour
+    --cache-dir: string                  # dossier pour les parquet de conversion (défaut : à côté de la source)
 ] {
     # fichiers par défaut : les 2 .gz les plus récents du registry.
     # On exclut toujours le fichier vivant `events.log` (log non compressé en cours
@@ -704,14 +768,29 @@ def main [
                 continue
             }
         }
-        let base = (build_base $file $infer_schema)
-        print $"(ansi cyan)┌─ Fichier: ($file) ─────────────────────────────┐(ansi reset)"
+        # Conversion automatique gz/jsonl -> parquet (par défaut) avant analyse,
+        # sauf si --no-convert. build_base lit le parquet résultant, bien plus
+        # rapide que de reparser l'ndjson intact à chaque exécution.
+        let eff = if $no_convert {
+            { file: $file, converted: false }
+        } else {
+            ensure_parquet $file $infer_schema --force=$force_convert --cache-dir=$cache_dir
+        }
+        let base = (build_base $eff.file $infer_schema)
+        let badge = if $eff.converted {
+            $"(ansi yellow) [converti → ($eff.file)](ansi reset)"
+        } else if not $no_convert and ($eff.file != $file) {
+            $"(ansi yellow) [parquet cache: ($eff.file)](ansi reset)"
+        } else { "" }
+        print $"(ansi cyan)┌─ Fichier: ($file)($badge) ───────────────────────┐(ansi reset)"
         for fam in $families {
             show_family $base $fam $num $explore
         }
         # Écrit aussi le rapport markdown (+ JSON par défaut) dans scanresult<TS>/
         # (même mécanisme que ngsoti_detail.nu) pour que l'invocation directe
         # produise bien des fichiers de sortie, pas seulement un affichage console.
+        # On passe la SOURCE ($file) pour le hash/dossier, indépendamment de la
+        # conversion (le parquet cache peut vivre ailleurs avec --cache-dir).
         let wrote = (write_report $base $file $scan_ts --no-json=$no_json)
         if $no_json {
             print $"(ansi cyan)Rapport écrit : ($wrote.md)(ansi reset)"
