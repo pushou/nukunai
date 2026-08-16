@@ -164,8 +164,9 @@ export def ensure_parquet [
     }
 
     # Convertit via kunai_to_parquet.nu (sous-processus nu), en écrivant vers la
-    # cible. On passe le flag --lazy selon la RAM dispo : eager par défaut (6x plus
-    # rapide mais gourmand) — le gros du cache restant là, c'est investi une fois.
+    # cible. lazy est le mode par défaut (passe partout, y compris les gros gz qui
+    # saturent la RAM en eager). Pour forcer eager (6x plus rapide mais très
+    # gourmand), il faudrait ajouter --eager à l'appel ci-dessous.
     print $"(ansi yellow)⚙ conversion (($file)) → (($target))(ansi reset)"
     let script = ($env.FILE_PWD | path join "kunai_to_parquet.nu")
     let res = (^nu $script $file --output $target --infer-schema $infer_schema | complete)

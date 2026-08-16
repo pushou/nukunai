@@ -9,14 +9,15 @@
 #   nu kunai_to_parquet.nu kunai.jsonl
 #   nu kunai_to_parquet.nu kunai.jsonl.gz
 #   nu kunai_to_parquet.nu kunai.jsonl --output out.parquet
-#   nu kunai_to_parquet.nu kunai.jsonl --lazy
+#   nu kunai_to_parquet.nu kunai.jsonl --eager
 #   nu kunai_to_parquet.nu kunai.jsonl --noflat
 #
 # Options:
 #   --infer-schema N   nb de lignes pour inférer le schéma (défaut 200000 ;
 #                      sous 200000 l'inférence peut échouer sur les gros lots)
-#   --lazy             conversion en mode lazy (moins de RAM mais plus lent ;
-#                      eager est ~6x plus rapide mais très gourmand en RAM)
+#   --eager            conversion en mode eager (6x plus rapide mais très
+#                      gourmand en RAM : sature la mémoire sur les gros gz ;
+#                      lazy est par défaut car il passe partout)
 #   --noflat           ne pas aplatir data/info (conserver la structure brute)
 #   --output FILE      nom exact du parquet de sortie (défaut : à côté de la
 #                      source, nom non ambigu, cf. default_output)
@@ -27,7 +28,8 @@
 #
 # NON DESTRUCTIF : la source .gz/.jsonl n'est JAMAIS supprimée ni écrasée. En mode
 # eager, le .gz est décompressé vers un fichier temporaire (polars ne lit pas le
-# gz compressé en eager), converti, puis le temporaire est supprimé.
+# gz compressé en eager), converti, puis le temporaire est supprimé (même en cas
+# d'échec). En mode lazy (défaut), le gz est lu directement, sans temporaire.
 
 # Nom de sortie par défaut : pour qu'un .gz et son .jsonl décompressé convergent
 # vers le MÊME parquet, on retire seulement un éventuel suffixe `.gz`, puis on
@@ -68,11 +70,11 @@ export def save_into_parquet [
 export def main [
     kunai_events_log_file: string
     --infer-schema: int = 200000
-    --lazy                       # lazy = moins de RAM, plus lent ; eager par défaut
+    --eager                      # eager = 6x plus rapide mais très gourmand en RAM ; lazy par défaut
     --noflat                     # ne pas aplatir data/info (conserver le brut)
     --output: string             # nom exact du parquet de sortie (défaut : par défaut)
 ] {
-    let eager_param = if $lazy { "--lazy" } else { "--eager" }
+    let eager_param = if $eager { "--eager" } else { "--lazy" }
     let noflat_param = if $noflat { "noflat" } else { "flat" }
 
     # le fichier source doit exister
