@@ -64,6 +64,7 @@ export def local_cfg [name: string] {
             '52.85.', '52.84.', '52.222.',   # aws CloudFront (apt Debian deb.debian.org)
             '3.174.', '18.161.', '18.160.',  # aws global accelerator (apt Debian)
             '13.248.', '13.224.', '13.35.',  # aws CloudFront (apt Debian)
+            '99.86.', '3.162.',              # aws CloudFront (apt Debian mirrors: 99.86.0.0/16 AMAZO-CF, 3.160.0.0/14 cloudfront)
             '143.204.', '99.84.', '99.83.',  # aws CloudFront (apt Debian)
             '76.223.', '15.197.', '3.33.',   # aws Global Accelerator/CloudFront (apt Debian)
             '172.67.', '104.21.',            # Cloudflare (apt Debian deb.debian.org)
@@ -78,7 +79,10 @@ export def local_cfg [name: string] {
         "allowlist_egress_procs" => ['rustup','rustup-init','cargo','git','git-remote-http',
                                      'git-remote-https','docker','docker-buildx','dockerd',
                                      'containerd','apt','apt-get','dpkg','wget','curl',
-                                     'ssl_client','wazuh-agentd','https']
+                                     'ssl_client','wazuh-agentd',
+                                     # 'https' = transport TLS d'apt (/usr/lib/apt/methods/https),
+                                     # process worker qu'apt lance pour télécharger les paquets.
+                                     'https']
         # Utilitaires / tâches de la chaîne build Rust (client lourd ~/.cargo, ~/.rustup)
         # dont l'exécution depuis /tmp/cargo-*, /tmp/rustc* ou ~/.cargo est BÉNIGNE.
         "allowlist_build_procs" => ['rustup','rustup-init','cargo','rustc','rustdoc',
