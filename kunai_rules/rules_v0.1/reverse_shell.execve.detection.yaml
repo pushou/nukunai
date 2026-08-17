@@ -1,0 +1,30 @@
+# Reverse shell natif BASH/SH : ouverture directe /dev/tcp/ ou /dev/udp/ par un
+# interpréteur shell -- source de reverse shell la plus fiable (aucun usage légitime).
+# Séparé du cas "-i nc/socat" : ici pas besoin de l'option -i, l'usage de /dev/tcp
+# dans une ligne de commande shell est déjà un indicateur de compromission active.
+---
+name: reverse_shell.execve.detection
+type: detection
+meta:
+  tags: [
+      "reverse_shell",
+      "type_detection",
+      "event_execve",
+      "event_execve_script",
+      "T1059.004", "command_and_scripting_interpreter:_unix_shell",
+    ]
+  attack: [ T1059.004 ]
+  authors: ["nukunai"]
+  comments:
+    - detect bash/sh/zsh/ksh/dash opening /dev/tcp or /dev/udp (no legitimate use case)
+
+match-on:
+  events:
+    kunai: [execve, execve_script]
+
+matches:
+  $shell:  .data.command_line ~= "\b(bash|sh|zsh|ksh|dash)\b"
+  $dev:    .data.command_line ~= "\b(/dev/tcp/|/dev/udp/)"
+
+condition: $shell and $dev
+severity: 10

@@ -1,0 +1,16 @@
+---
+name: exfil_public_send.send_data.detection
+type: detection
+meta:
+  tags: ["exfil_public_send", "type_detection", "event_send_data", "T1041", "T1030"]
+  attack: [ T1041 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [send_data]
+matches:
+  $pub:  .data.dst.public == true
+  $big:  .data.data_size > 1000000
+  $hi:   .data.data_entropy > 7.5
+condition: $pub and ($big or $hi)
+severity: 8

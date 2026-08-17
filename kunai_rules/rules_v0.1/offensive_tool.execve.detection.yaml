@@ -1,0 +1,14 @@
+---
+name: offensive_tool.execve.detection
+type: detection
+meta:
+  tags: ["offensive_tool", "type_detection", "event_execve", "T1588.002"]
+  attack: [ T1588.002 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [execve]
+matches:
+  $t: .data.command_line ~= "(?:nmap|masscan|hydra|medusa|john|hashcat|mimikatz|msfconsole|meterpreter|procdump|sqlmap|nikto|dirb|gobuster)"
+condition: $t
+severity: 8

@@ -1,0 +1,14 @@
+---
+name: revshell_tool.execve.detection
+type: detection
+meta:
+  tags: ["revshell_tool", "type_detection", "event_execve", "T1059.004"]
+  attack: [ T1059.004 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [execve, execve_script]
+matches:
+  $sh: .data.command_line ~= "(?:/bin/(?:bash|sh|zsh|ksh) -[ic].*(?:nc |ncat|socat)|(?:bash|sh|zsh) -[ic].*(?:nc |ncat|socat))"
+condition: $sh
+severity: 10

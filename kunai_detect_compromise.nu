@@ -19,104 +19,26 @@
 #                      dns_query, kill, bpf_prog_load, mmap_exec, prctl
 
 # =====================================================================
-# ---- Contexte machine "registry" (agents/services légitimes) --------
+# ---- Contexte machine "registry" -------------------------------------
+# Le contexte LÉGITIME de la machine (agents, services, réseaux, chemins
+# bénins, allowlists) a été refactorisé hors du moteur dans le module
+# kunai_rules_local.nu (règles LOCALES machine). Le pot commun exécutable
+# des règles génériques vit dans kunai_rules.nu. Le moteur consomme ici
+# les deux modules et compose générique + local.
 # =====================================================================
-export def cfg [name: string] {
-    match $name {
-        # vrais agents / services de la plateforme à retirer du bruit définitivement.
-        # On N'y met PAS les outils détournables (docker, chmod, chown, tar, cp, bash...),
-        # qui ne doivent être bénins QUE quand ils proviennent d'une chaîne de processus
-        # légitime (voir benign_utilities + not_legit), sinon un attaquant qui les lance
-        # directement serait masqué.
-        "legit_agents" => ['dpkg','dpkg-deb','dpkg-db-backup','dpkg-trigger','apt','apt-get','apt-cache','apt-key',
-                           'gitlab-runner','gitlab-workhorse','gitlab-shell','git','dockerd',
-                           'containerd','containerd-shim','runc','systemd','systemctl','journalctl',
-                           'wazuh-agent','wazuh-check-mk','crowdsec','cscli','splunk','splunkforwarder',
-                           'check_mk_agent','cmk-agent-ctl','sqv','nginx','nginx-worker','sshd',
-                           'cron','crond','dbus-daemon','polkitd','NetworkManager','unattended-upgrade',
-                           'auditd','auditctl','auditd-manager','augenrules','aureport','ausearch']
-        # utilitaires banals / commandes système standard. Bénins UNIQUEMENT quand ils
-        # proviennent d'une chaîne légitime (voir not_legit) : un docker/chmod/curl/perl/
-        # python3 lancé par un attaquant (ou un task inconnu sous systemd) reste détecté.
-        # Liste élargie avec les commandes standard observées comme enfants légitimes de
-        # check_mk_agent / wazuh / ssh, afin de ne pas générer de faux positifs sur le trafic
-        # normal quand on retire la règle "parent agent => bénin" (voir not_legit).
-        "benign_utilities" => ['docker','grep','sed','cat','tar','gzip','bzip2','xz','gpg','gpgv',
-                               'sh','bash','curl','wget','chmod','chown','install','cp','mv','rm',
-                               'cmp','mktemp','rmdir','touch','mkdir','ln','readlink','basename',
-                               'dirname','date','sleep','printf','echo','nproc','lsblk','df','free',
-                               'pgrep','ps','ss','ip','hostname','uname',
-                               'stat','awk','python3','python','perl','timedatectl','tr','cut',
-                               'postconf','find','wc','du','ls','locale','paste','head','sort',
-                               'timeout','dmsetup','nohup','ipmitool','netstat','last','iptables',
-                               'ip6tables','nft','findmnt','sysctl','unix_chkpwd','crontab','login',
-                               'systemd-timesyn','sshd-session','su','gpg-agent','loginctl',
-                               'udevadm','sudo']
-        # IP locales / plateforme (bruit réseau légitime)
-        "dns_ips" => ['10.6.255.106']
-        # ---------------------------------------------------------------
-        # ALLOWLIST réseau : destinations PUBLIQUES réputées connues/bénignes.
-        # Une connexion sortante vers l'une de ces IP (préfixe /24, /16 …) N'est
-        # PAS un "public_egress" suspect : ces hôtes sont les dépôts/CDN/miroirs
-        # légitimes du serveur (téléchargement de paquets, git, docker hub…).
-        # Chaque entrée est un préfixe "ip/reseau" que l'on compare au début de
-        # dst_ip (le champ est une chaîne). Format v4 pour simplifier la comparaison
-        # par préfixe ; on ajoute aussi les préfixes v6 quand le bruit le justifie.
-        "allowlist_public_networks" => [
-            # crates.io / static.rust-lang.org (Fastly) : 151.101.x.x
-            '151.101.', '151.101',
-            # GitHub (140.82.*, 185.199.* raw/gh-pages, *githubusercontent)
-            '140.82.', '185.199.',
-            # GitLab (Cloudflare 172.65.* / 2606:4700::, gitlab requires 104/172.64)
-            '172.65.', '104.18.', '172.64.',
-            # Cloudflare public (misc)
-            '104.16.', '104.17.', '104.19.',
-            # Cloudflare IPv6 (crates.io / static.rust-lang.org egress : 2a04:4e42::)
-            '2a04:4e42',
-            # Docker Hub / docker.io (production registry mirror : 18.xxx)
-            'registry.iutbeziers.fr',
-            # NTP/paquets/miroirs locaux de la plateforme (ex. réseau de l'IUT)
-            '10.6.',
-        ]
-        # Ports de service vers lesquels un "public_egress" N'est PAS suspect quand
-        # la destination est déjà allowlistée (443 https, 80 http, 53 dns). Les ports
-        # d'exfiltration classiques restent signalés.
-        "allowlist_egress_ports" => [443, 80, 53]
-        # Processus dont l'activité réseau sortante vers l'extérieur est légitime
-        # (téléchargement de dépendances / dépôts) : rustup, cargo, git, apt, etc.
-        "allowlist_egress_procs" => ['rustup','rustup-init','cargo','git','git-remote-http',
-                                     'git-remote-https','docker','docker-buildx','dockerd',
-                                     'containerd','apt','apt-get','dpkg','wget','curl',
-                                     'ssl_client','wazuh-agentd']
-        # Utilitaires / tâches de la chaîne build Rust (client lourd ~/.cargo, ~/.rustup)
-        # dont l'exécution depuis /tmp/cargo-*, /tmp/rustc* ou ~/.cargo est BÉNIGNE.
-        # Ils compilent/déposent des artefacts dans des répertoires temporaires par
-        # conception ; on n'alerte que si le chemin n'est pas l'un de ces répertoires
-        # de compilation légitimes (voir allowlist_build_paths).
-        "allowlist_build_procs" => ['rustup','rustup-init','cargo','rustc','rustdoc',
-                                    'cc','cc1','cc1plus','cc1obj','cc1objplus','as','as1',
-                                    'ar','ranlib','llvm-ar','llvm-ranlib','nm',
-                                    'collect2','ld.lld','rust-lld','cargo-git-checkout',
-                                    'clippy-driver','cargo-clippy','cargo-build',
-                                    # helper d'extraction des toolchains rustup (~/.rustup/tmp/*)
-                                    'CloseHandle']
-        # Chemins de compilation / cache légitimes : l'exécution (mmap/exec) ou la
-        # création de fichier dans ces préfixes par un process de la chaîne build
-        # ci-dessus n'est PAS suspecte.
-        "allowlist_build_paths" => [
-            '/tmp/cargo-', '/tmp/rustc', '/tmp/tmp.', '/tmp/cargo-install',
-            # scratch GCC/LLVM (assembleur/linker) : /tmp/cc*.s, /tmp/cc*.o,
-            # /tmp/cc*.res, /tmp/cc*.cdtor.*, /tmp/cc*.dbgeng.lto
-            '/tmp/cc', '/tmp/as',
-            '/home/nushell/.cargo/', '/home/nushell/.rustup/',
-            '/root/.cargo/', '/root/.rustup/',
-        ]
-        _ => { error make { msg: $"config inconnue: ($name)" } }
-    }
+use /home/pouchou/Nextcloud/dev/dev_nushell/nukunai/kunai_rules_local.nu local_cfg
+# pot commun exécutable : règles génériques (sans contexte machine)
+use /home/pouchou/Nextcloud/dev/dev_nushell/nukunai/kunai_rules.nu *
+
+
+# expression polars booléenne : vraie si la tâche (task_name) est dans la liste
+# allowlistée passée (liste de noms de process bénins, convertie en df).
+export def is_in_df [col, values: list<string>] {
+    ((polars col $col) | polars is-in ($values | polars into-df))
 }
 
-# expression (expr polars) : la tâche n'appartient PAS au bruit légitime.
-# Une ligne est BÉNIGNE (exclue du bruit) si :
+# not_legit : expression "la ligne N'EST PAS légitime" (à conserver avec filter).
+# Une ligne est bénigne si :
 #   - la tâche est elle-même un agent légitime (legit_agents), OU
 #   - la tâche est un utilitaire bénin (benign_utilities, commande standard) et son
 #     PARENT est légitime (agent OU utilitaire, chaîne de parents).
@@ -124,9 +46,10 @@ export def cfg [name: string] {
 # daemonise son binaire sous systemd (ex. perfctl → "oom_reaper", parent systemd) serait
 # masqué : il n'est ni agent, ni utilitaire, donc il reste DÉTECTÉ quel que soit son parent.
 # Un docker/chmod/curl/perl/python3 lancé par un task inconnu reste donc détecté.
+# Les listes proviennent du contexte LOCAL machine (kunai_rules_local.nu).
 export def not_legit [] {
-    let legit = ((cfg legit_agents) | polars into-df)
-    let utils = ((cfg benign_utilities) | polars into-df)
+    let legit = ((local_cfg legit_agents) | polars into-df)
+    let utils = ((local_cfg benign_utilities) | polars into-df)
     let task_legit   = ((polars col task_name) | polars is-in $legit)
     let task_utils   = ((polars col task_name) | polars is-in $utils)
     let parent_legit = ((polars col parent_task_name) | polars is-in $legit)
@@ -150,12 +73,6 @@ export def starts_with_any [col, prefixes: list<string>] {
     let escaped = ($prefixes | each {|p| $p | str replace -a -r '([\.\+\*\?\(\)\[\]\{\}\$\^\|\\])' '\$1' })
     let re = ('^(' + ($escaped | str join '|') + ')')
     ((polars col $col) | polars contains $re)
-}
-
-# expression polars booléenne : vraie si la tâche (task_name) est dans la liste
-# allowlistée passée (liste de noms de process bénins, convertie en df).
-export def is_in_df [col, values: list<string>] {
-    ((polars col $col) | polars is-in ($values | polars into-df))
 }
 
 # =====================================================================
@@ -324,12 +241,16 @@ export def empty_like [base] {
 # ---- FAMILLE execve : exécution suspecte -----------------------------
 # =====================================================================
 export def detect_execve [base] {
-    let c_shell = ((polars col command_line) | polars contains "(?:/bin/(?:bash|sh|zsh|ksh) -[ic].*(?:nc |ncat|/dev/tcp/|/dev/udp/|socat)|(?:bash|sh|zsh) -[ic].*(?:/dev/tcp/|/dev/udp/))")
-    let c_dl    = ((polars col command_line) | polars contains "(?:curl|wget) .*(?:\\|| \\-o| \\-O).*(?:sh|bash|python3?|perl)")
-    let c_obf   = ((polars col command_line) | polars contains "(?:base64 -d|base64 -D|xxd -r|openssl enc|perl -e|python3? -c|php -r)")
-    let c_tool  = ((polars col command_line) | polars contains "(?:nmap|masscan|hydra|medusa|john|hashcat|mimikatz|msfconsole|meterpreter|procdump|sqlmap|nikto|dirb|gobuster)")
-    let c_tmp   = ((polars col command_line) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/)[^ ]*(?:\\.sh|\\.py|\\.pl|\\.elf|\\.bin|\\.out| )")
-    let is_build = (is_in_df 'task_name' (cfg allowlist_build_procs))
+    # Règles GÉNÉRIQUES importées du pot commun kunai_rules.nu (phénotypes
+    # reverse shell / dropper / obfuscation / outil offensif) — voir également
+    # les fichiers .yaml kunai homonymes dans kunai_rules/rules_v0.1/.
+    let c_shell = (r_execve_shell_tool)
+    let c_revsh = (r_execve_reverse_shell)
+    let c_dl    = (r_execve_download_exec)
+    let c_obf   = (r_execve_obfuscated)
+    let c_tool  = (r_execve_offensive_tool)
+    let c_tmp   = (r_execve_from_tmp)
+    let is_build = (is_in_df 'task_name' (local_cfg allowlist_build_procs))
     # Véritable "dropper" : exécution depuis /tmp PAR un process qui n'est PAS la
     # chaîne build (rustup/cargo/cc/rustc…) légitime. L'exécution d'un binaire
     # "exec_from_tmp" par un utilitaire type bash/sh/langage reste détectée.
@@ -344,7 +265,8 @@ export def detect_execve [base] {
     | polars filter (not_legit)
     | polars select [utc_time task_name task_pid command_line]
     | polars with-column (
-        (polars when $c_shell (polars lit "reverse_shell")
+        (polars when $c_revsh (polars lit "reverse_shell")
+         | polars when $c_shell (polars lit "reverse_shell")
          | polars when $c_dl (polars lit "download_and_execute")
          | polars when $c_obf (polars lit "obfuscated_exec")
          | polars when $c_tool (polars lit "offensive_tool")
@@ -370,9 +292,9 @@ export def detect_file_create [base] {
     # sont des artefacts de compilation/extraction temporaires, PAS des drops.
     # Threads internes de codegen LLVM de rustc ("opt cgu.*", "lto cgu.*",
     # "coordinator") : écrivent les *.cgu.*.rcgu.o dans la zone scratch build.
-    let is_build = ((is_in_df 'task_name' (cfg allowlist_build_procs))
+    let is_build = ((is_in_df 'task_name' (local_cfg allowlist_build_procs))
         or (starts_with_any 'task_name' ['opt cgu','lto cgu','coordinator','rustc_backtrace']))
-    let build_path = (starts_with_any 'main_path' (cfg allowlist_build_paths))
+    let build_path = (starts_with_any 'main_path' (local_cfg allowlist_build_paths))
     # Par défaut, toute écriture dans une zone scratch build est bénigne (scratch).
     let benign_zone = $build_path
     # tmp_dropper = écriture d'un ARTEFACT EXÉCUTABLE (.sh/.so/.elf/.bin…) dans un
@@ -381,7 +303,51 @@ export def detect_file_create [base] {
     # (script téléchargé) reste détecté. tmp_write = tout autre écriture /tmp.
     let c_tmpdl_real  = ($c_tmpdl and (($benign_zone and $is_build) | polars expr-not))
     let c_tmpdir_real = ($c_tmpdir and ($benign_zone | polars expr-not))
+    # Webshell (pot commun r_filecreate_webshell / fs_webshell_drop kunai,
+    # T1505.003, sev 9) : script serveur (php/asp/jsp/cgi/py/rb…) créé DANS un
+    # document-root web. Un serveur légitime ne crée pas de script exécutable neuf
+    # dans son docroot : indicateur fort de compromission web.
+    let is_webshell_file = (r_filecreate_webshell)
+    # Hidden file temporaire (pot commun r_filecreate_hidden_tmp /
+    # fs_hidden_dir_suspicious kunai, T1564.001, sev 7) : fichier caché (préfixe '.')
+    # posé dans /tmp|/var/tmp|/dev/shm. N'est signalé que si CE fichier est réellement
+    # exécuté (corrélation drop-and-run $c_exec), éliminant les artefacts cachés
+    # légitimes jamais exécutés.
+    let c_hidden_tmp = (r_filecreate_hidden_tmp)
     if (not (has_events $base 'file_create')) { return (empty_like $base) }
+
+    # ---- Corrélation drop-and-run (remplace le filtrage par volume) -----
+    # Un fichier déposé dans une zone temporaire n'est suspect QUE s'il est
+    # réellement exécuté : soit mmappé en exécution (mmap_exec.mapped_path),
+    # soit lancé comme script/interpréteur (premier mot de command_line sous
+    # /tmp|/dev/shm|/var/tmp). Les artefacts temporaires LÉGITIMES (ex. la
+    # génération d'initramfs mkinitramfs par dpkg/cp, jamais exécutée) sont
+    # ainsi éliminés, tandis que les vrais droppers déposés puis exécutés
+    # restent détectés. Ceci est strictement plus restrictif : ne peut créer
+    # de nouveaux FP, uniquement un risque de FN si un artefact tmp déposé
+    # est exécuté sans caption par mmap_exec ni execve.
+    let exec_paths = (do {
+        let mmap = ($base
+            | polars filter ((polars col event_info_name) == 'mmap_exec')
+            | polars unnest mapped -s "_"
+            | polars filter ((polars col mapped_path) | polars is-not-null)
+            | polars select [(polars col mapped_path)]
+            | polars unique | polars collect | polars into-nu | get mapped_path)
+        let cfgs = ($base
+            | polars filter ((polars col event_info_name) == 'execve')
+            | polars unnest exe -s "_"
+            | polars filter ((polars col command_line) | polars is-not-null)
+            | polars select [(polars col command_line)]
+            | polars collect | polars into-nu | get command_line)
+        let tmp = ($cfgs
+            | each {|x|
+                let f = ($x | split row ' ' | first)
+                (if (($f | str starts-with '/tmp/') or ($f | str starts-with '/dev/shm/') or ($f | str starts-with '/var/tmp/')) { $f } else { null })
+            }
+            | where {|x| $x != null})
+        ($mmap | append $tmp | uniq)
+    })
+    let c_exec = (is_in_df 'main_path' $exec_paths)
 
     $base
     | ev 'file_create'
@@ -389,9 +355,11 @@ export def detect_file_create [base] {
     | (unnestif $in exe)
     | polars select [utc_time task_name task_pid main_path]
     | polars with-column (
-        (polars when $c_persist (polars lit "persistence_path")
-         | polars when $c_tmpdl_real (polars lit "tmp_dropper")
-         | polars when $c_tmpdir_real (polars lit "tmp_write")
+        (polars when $is_webshell_file (polars lit "webshell_drop")
+         | polars when $c_persist (polars lit "persistence_path")
+         | polars when ($c_tmpdl_real and $c_exec) (polars lit "tmp_dropper")
+         | polars when ($c_tmpdir_real and $c_exec) (polars lit "tmp_write")
+         | polars when ($c_hidden_tmp and $c_exec) (polars lit "hidden_tmp")
          | polars otherwise (polars lit "none"))
         | polars as evidence)
     | polars filter ((polars col evidence) != 'none')
@@ -401,15 +369,21 @@ export def detect_file_create [base] {
 # ---- FAMILLE connect : réseau sortant suspect ------------------------
 # =====================================================================
 export def detect_connect [base] {
-    let unusual = [4444,4445,6667,31337,9001,8888,8443,1337,2222,161,137,445,9999,49152]
-    let unusual_s = ($unusual | polars into-df)
-    let c_public = ((polars col dst_public) == true)
-    let c_port   = ((polars col dst_port) | polars is-in $unusual_s)
+    # Ports inhabituels/suspects (règles kunai net_c2_port / net_cryptominer_pool, T1095/T1496) :
+    # - C2/backdoor : 4444,4445,31337,9001,8888,8443,1337,2222,9999
+    # - Tor (exit/OR) : 9050,9051,9150
+    # - Pools de minage (xmr/eth) : 5555,7777,14444,14433,45700,3256,20535,3333
+    # - divers/protocoles nets : 6667 (IRC/C2), 161,137,445,49152 (ephemeral)
+    # Ports C2/backdoor/Tor/mining et protocoles nets inhabituels pour une
+    # destination publique — pot commun r_connect_unusual_port (cf. le fichier
+    # de règle c2_unusual_port.connect.detection.yaml dans kunai_rules/rules_v0.1/).
+    let c_public = (r_connect_public_egress)
+    let c_port   = (r_connect_unusual_port)
     # allowlist réseau EGRESS : destination publique réputée (CDN/miroir/dépôt) ET
     # processus légitime de téléchargement. => bénin, on n'alerte pas.
-    let c_allow_net  = (starts_with_any 'dst_ip' (cfg allowlist_public_networks))
-    let c_allow_proc = (is_in_df 'task_name' (cfg allowlist_egress_procs))
-    let c_allow_port = ((polars col dst_port) | polars is-in (cfg allowlist_egress_ports | polars into-df))
+    let c_allow_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
+    let c_allow_proc = (is_in_df 'task_name' (local_cfg allowlist_egress_procs))
+    let c_allow_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
     # public_egress SUSPECT = destination publique NON allowlistée, OU destination
     # publique allowlistée mais vers un port inhabituel (ex. C2 sur 31337 d'une IP CDN).
     let c_egress_susp = ($c_public and (($c_allow_net and $c_allow_proc and $c_allow_port) | polars expr-not))
@@ -437,16 +411,16 @@ export def detect_connect [base] {
 # ---- FAMILLE send_data : exfiltration --------------------------------
 # =====================================================================
 export def detect_send_data [base] {
-    let c_public = ((polars col dst_public) == true)
-    let c_big    = ((polars col data_size) > 1000000)
-    let c_hi     = ((polars col data_entropy) > 7.5)
+    let c_public = (r_connect_public_egress)
+    let c_big    = (r_senddata_large)
+    let c_hi     = (r_senddata_high_entropy)
     # Exfiltration = envoi de données vers une destination PUBLIQUE (C2/exfil).
     # Le "high_entropy" seul ne suffit PAS : du trafic chiffré interne (agent vers
     # son manager TLS, buildx vers le registry docker local) est normalement à
     # entropie élevée. On ne le signale que si la destination est PUBLIQUE.
-    let c_allow_net  = (starts_with_any 'dst_ip' (cfg allowlist_public_networks))
-    let c_allow_proc = (is_in_df 'task_name' (cfg allowlist_egress_procs))
-    let c_allow_port = ((polars col dst_port) | polars is-in (cfg allowlist_egress_ports | polars into-df))
+    let c_allow_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
+    let c_allow_proc = (is_in_df 'task_name' (local_cfg allowlist_egress_procs))
+    let c_allow_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
     # egress autorisé = destination publique allowlistée (CDN/dépôt) + process légitime
     # + port standard. Un tel download vers une cible réputée est bénin, même si le
     # contenu est chiffré (entropie élevée) : le TLS vers crates.io/GitHub est normal.
@@ -479,9 +453,10 @@ export def detect_send_data [base] {
 # ---- FAMILLE dns_query : recon / tunneling ---------------------------
 # =====================================================================
 export def detect_dns_query [base] {
-    let c_tld    = ((polars col query) | polars contains "(?:\\.tk$|\\.ml$|\\.ga$|\\.cf$|\\.gq$|\\.top$|\\.xyz$|\\.pw$|\\.onion$|\\.i2p$)")
-    let c_long   = (((polars col query) | polars str-lengths) > 60)
-    let c_nondns = ((((polars col dns_server_ip) | polars is-in (cfg dns_ips | polars into-df)) | polars expr-not))
+    # Règles génériques pot commun (cf. dns_suspicious.dns_query.detection.yaml).
+    let c_tld    = (r_dns_suspicious_tld)
+    let c_long   = (r_dns_long_query)
+    let c_nondns = ((((polars col dns_server_ip) | polars is-in (local_cfg dns_ips | polars into-df)) | polars expr-not))
     if (not (has_events $base 'dns_query')) { return (empty_like $base) }
 
     $base
@@ -503,13 +478,11 @@ export def detect_dns_query [base] {
 # ---- FAMILLE kill : perturbation / évasion ---------------------------
 # =====================================================================
 export def detect_kill [base] {
-    let c_target = ((polars col target_task_name) | polars contains "(?:docker|containerd|sshd|systemd|wazuh|crowdsec|splunk|check_mk|auditd|cron|agent)")
-    let c_hard   = ((polars col signal) == 'SIGKILL')
-    # Signaux BÉNINS de gestion de processus / runtime : ne signalent JAMAIS une
-    # compromission (SIGURG = préemption goroutine Go des dockerd/containerd qui
-    # alimentait 3151 faux positifs, SIGCHLD = fin de fils, SIGCONT/SIGWINCH…).
-    # Seuls les signaux de terminaison/destruction volontaire sont suspects.
-    let c_benign_sig = ((polars col signal) | polars is-in (['SIGURG','SIGCHLD','SIGCONT','SIGWINCH','SIGIO','SIGPIPE'] | polars into-df))
+    # Règles génériques pot commun (cf. kill_critical.kill.detection.yaml). La liste
+    # de signaux bénins est un contexte LOCAL machine (local_cfg benign_signals).
+    let c_target = (r_kill_critical_target)
+    let c_hard   = (r_kill_hard_signal)
+    let c_benign_sig = ((polars col signal) | polars is-in (local_cfg benign_signals | polars into-df))
     # kill SUSPECT : cible critique (agent/daemon) tuée par un signal de TERMINAISON
     # (pas un signal bénin de runtime) -- le signal reste le vrai signal d'attaque.
     let c_crit_susp = ($c_target and ($c_benign_sig | polars expr-not))
@@ -554,12 +527,13 @@ export def detect_bpf [base] {
 # ---- FAMILLE mmap_exec : injection / drop-and-run --------------------
 # =====================================================================
 export def detect_mmap_exec [base] {
-    let c_mapped = ((polars col mapped_path) | polars contains "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/proc/self/fd/|memfd:)")
+    # Motif générique pot commun (cf. mmap_exec_tmp.mmap_exec.detection.yaml).
+    let c_mapped = (r_mmapexec_from_tmp)
     # rustc/cc… chargent légitimement leurs proc-macro .so depuis /tmp/cargo-* pendant
     # la compilation : ce n'est pas une injection (drop-and-run) mais un artefact de
     # build. On ne signale le mmap depuis /tmp que pour un process non-build.
-    let is_build = (is_in_df 'task_name' (cfg allowlist_build_procs))
-    let build_path = (starts_with_any 'mapped_path' (cfg allowlist_build_paths))
+    let is_build = (is_in_df 'task_name' (local_cfg allowlist_build_procs))
+    let build_path = (starts_with_any 'mapped_path' (local_cfg allowlist_build_paths))
     let benign_mmap = ($is_build and $build_path)
     let c_susp = ($c_mapped and ($benign_mmap | polars expr-not))
     if (not (has_events $base 'mmap_exec')) { return (empty_like $base) }
@@ -583,7 +557,8 @@ export def detect_mmap_exec [base] {
 # ---- FAMILLE prctl : évasion (dumpable / seccomp) --------------------
 # =====================================================================
 export def detect_prctl [base] {
-    let c_dump = ((polars col option) == 'PR_SET_DUMPABLE')
+    # Règle générique pot commun (cf. set_dumpable.prctl.detection.yaml, T1622).
+    let c_dump = (r_prctl_dumpable)
     if (not (has_events $base 'prctl')) { return (empty_like $base) }
 
     $base

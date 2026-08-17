@@ -1,0 +1,14 @@
+---
+name: hidden_tmp.file_create.detection
+type: detection
+meta:
+  tags: ["hidden_tmp", "type_detection", "event_file_create", "T1564.001"]
+  attack: [ T1564.001 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [file_create]
+matches:
+  $h: .data.path ~= "^/tmp/\.[^/]+|^/dev/shm/\.[^/]+|^/var/tmp/\.[^/]+"
+condition: $h
+severity: 7

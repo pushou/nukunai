@@ -1,0 +1,14 @@
+---
+name: mmap_exec_tmp.mmap_exec.detection
+type: detection
+meta:
+  tags: ["mmap_exec_tmp", "type_detection", "event_mmap_exec", "T1055.001", "T1071"]
+  attack: [ T1055.001 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [mmap_exec]
+matches:
+  $m: .data.mapped.path ~= "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/proc/self/fd/|memfd:)"
+condition: $m
+severity: 8

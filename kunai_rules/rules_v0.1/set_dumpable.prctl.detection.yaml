@@ -1,0 +1,14 @@
+---
+name: set_dumpable.prctl.detection
+type: detection
+meta:
+  tags: ["set_dumpable", "type_detection", "event_prctl", "T1622"]
+  attack: [ T1622 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [prctl]
+matches:
+  $d: .data.option == "PR_SET_DUMPABLE"
+condition: $d
+severity: 7

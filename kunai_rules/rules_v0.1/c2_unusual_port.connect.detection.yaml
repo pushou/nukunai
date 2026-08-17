@@ -1,0 +1,14 @@
+---
+name: c2_unusual_port.connect.detection
+type: detection
+meta:
+  tags: ["c2_unusual_port", "type_detection", "event_connect", "T1095", "T1496"]
+  attack: [ T1095 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [connect]
+matches:
+  $p: .data.dst.port in [4444,4445,6667,31337,9001,8888,8443,1337,2222,161,137,445,9999,9050,9051,9150,5555,7777,14444,14433,45700,3256,20535,3333]
+condition: $p
+severity: 8
