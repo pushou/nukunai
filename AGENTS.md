@@ -40,13 +40,22 @@ ngsoti_detail.nu / ngsoti_all.nu / ngsoti_report.nu   wrappers sur le dataset ng
 ## Règles métier / contexte local (résumé)
 
 - `legit_agents` : vrais agents/services (dpkg, gitlab, dockerd, containerd, systemd, wazuh,
-  crowdsec, splunk, check_mk, nginx, sshd, cron, dbus, polkit, NetworkManager, unattended-upgrade, audit*).
+  crowdsec, splunk, check_mk, nginx, sshd, cron, dbus, polkit, NetworkManager, unattended-upgrade,
+  chronyd/chrony/systemd-timesyn*, audit*). Les services de synchro NTP (chronyd) sont des
+  agents système légitimes : leur trafic port 123 vers le pool Debian NTP n'est PAS une
+  exfiltration (rejoint not_legit). Ne pas les retirer sous peine de FP public_egress.
 - `benign_utilities` : outils DÉTOURNABLES (docker, curl, wget, chmod, chown, tar, cp, bash…).
   Ils ne sont bénins QUE s'ils viennent d'une chaîne légitime (voir `not_legit`).
 - `allowlist_build_procs` / `allowlist_build_paths` : chaîne de build Rust (rustup, cargo,
   rustc, cc, as, /tmp/cargo-*, ~/.cargo, ~/.rustup…) dont l'activité scratch est bénigne.
+- `allowlist_initramfs_paths` / chaîne initramfs : écriture/exécution de la génération
+  initramfs (mkinitramfs/dracut/update-initramfs sous /var/tmp/mkinitramfs_*, /usr/lib/dracut)
+  jamais utilisée par de la persistance malveillante — même logique que allowlist_build.
 - `allowlist_egress_procs/ports/networks` : egress réseau légitime (cargo/git/apt/docker →
   CDN Fastly, GitHub, GitLab/Cloudflare, registry docker local, ports 443/80/53).
+  Inclut les miroirs apt Debian desservis par AWS CloudFront/Global Accelerator/Cloudflare
+  (dont les plages 99.86./3.162. AMAZO-CF) et le process worker `https` — transport TLS
+  d'apt (/usr/lib/apt/methods/https) qui télécharge les paquets.
 - `benign_signals` : SIGURG/SIGCHLD/SIGCONT/SIGWINCH/SIGIO/SIGPIPE (régulation docker/Go, jamais un kill suspect).
 
 ## Concepts de détection (à préserver)

@@ -383,11 +383,13 @@ validator for the detection rules:
 kunai replay -r kunai_rules/rules_v0.1/c2_unusual_port.connect.detection.kun /tmp/events.jsonl
 ```
 
-**Known quirk (kunai 0.4.0 gene parser):** a bare integer literal on the RHS
-of `==` (e.g. `.data.dst.port == 31337`) is rejected with
-`expected value or indirect_field_path`, and this is **reproducible on the
-upstream rules** (digisquad `net_c2_port.connect.detection.yaml` fails the
-same way). Our nushell/polars engine is therefore the source of truth for
+**Known quirk (kunai gene parser, reproducible up to 0.6.2):** a bare
+integer literal on the RHS of `==` (e.g. `.data.dst.port == 31337`) is
+rejected with `expected value or indirect_field_path`, and this is
+**reproducible on the upstream rules** (digisquad
+`net_c2_port.connect.detection.yaml` fails the same way). **Fix:** quote the
+literal (`== '31337'`, `> '1000000'`, `> '7.5'`) — gene still compares
+numerically. Our nushell/polars engine is therefore the source of truth for
 analysis and handles integers/ranges/regex cleanly; use `kunai replay` only
 as an auxiliary syntax check, not as the gate.
 

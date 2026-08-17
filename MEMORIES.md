@@ -193,7 +193,8 @@ lignes). Voir `main` de `kunai_detect_compromise.nu` (test sur l'extension).
 **Type :** fact
 
 Branches **main** et **deepseek**, les deux poussées sur origin. `deepseek` est la branche
-active de travail (actuellement sur `05bbbe2`, 1 commit devant `origin/deepseek`).
+active de travail (actuellement sur `d3f8426`, quelques commits locaux devant `origin/deepseek`,
+non poussés tant que l'utilisateur ne le demande pas).
 
 ---
 
@@ -298,3 +299,29 @@ recoupement / réutilisation des phénotypes dans `kunai_rules.nu`) :
 (`kunai_rules/rules_v0.1/*.detection.kun`, syntaxe gene identique aux upstreams) et le moteur
 restent autonomes : l'analyse ne dépend jamais du réseau ni de ces submodules. Le format `.kun`
 a été validé conforme au format kunai officiel (même syntaxe que les 306 règles digisquad).
+
+---
+
+## 20. Fixes d'allowlist 2026-08-17 (bruit local, non-régression)
+
+**Type :** fact (ajout 2026-08-17)
+
+Trois affinages du contexte local (`kunai_rules_local.nu`) qui retirent du bruit LÉGITIME
+sans toucher aux règles génériques. Validés : zéro FP sur 5 logs registry sains
+(20334/20335/20338/20372/20374) + 16 échantillons ngsoti, détections attaques préservées
+(C2 beacon 66.23.233.179:9375 / 15e67237, drop-and-run /tmp/sample.bin, synflood 22e4a57a,
+Telnet port 23).
+
+- **NTP (chronyd) — commit `df27987`** : le trafic de synchro NTP de `chronyd`/`chrony`/
+  `systemd-timesyn*` (port 123, pool Debian NTP, paquets 48 o) était signalé en
+  `public_egress` (connect/send_data/dns 5+3+2 → 0 après fix). Ajoutés à `legit_agents` →
+  filtrés par `not_legit` ; les règles egress génériques restent intactes.
+- **Initramfs — commit `ec0b66e`** : la génération d'initramfs (mkinitramfs/dracut/
+  update-initramfs, `/var/tmp/mkinitramfs_*`, `/usr/lib/dracut`) écrit/exécute des artefacts
+  scratch jamais utilisés par de la persistance malveillante. `allowlist_initramfs_paths`
+  + chaîne moteur (même logique que `allowlist_build`).
+- **apt/CloudFront — commit `d3f8426`** : `apt-get update` vers les miroirs Debian sertis par
+  AWS CloudFront/Global Accelerator/Cloudflare déclenchait des connect/send_data. Ajout des
+  plages `99.86.` (AMAZO-CF /16) et `3.162.` (CloudFront /14) à `allowlist_public_networks`,
+  et clarification du process worker `https` (`/usr/lib/apt/methods/https`, transport TLS
+  d'apt) dans `allowlist_egress_procs`.
