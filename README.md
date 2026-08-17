@@ -370,9 +370,12 @@ git submodule update --init --recursive
 ```
 
 They are read-only references for cross-checking. The engine itself stays
-self-contained in `kunai_rules.nu` / `kunai_rules_local.nu` and the local
-`kunai_rules/rules_v0.1/*.detection.kun` pot commun (same gene syntax as the
-upstreames), so the analysis never depends on network access.
+self-contained in `kunai_rules.nu` (generic pot commun), `kunai_rules_local.nu`
+(thin interface) + `kunai_local_cfg.nu` (per-machine local context, socle `default`
++ `profiles`) and the local `kunai_rules/rules_v0.1/*.detection.kun` pot commun
+(same gene syntax as the upstreames), so the analysis never depends on network
+access. Use `--profile <name>` (or `-p`) on the engine to select a local profile
+(e.g. `-p elastic` for an ELK/tpot host); it defaults to the machine hostname.
 
 ### Validating rules with `kunai replay`
 

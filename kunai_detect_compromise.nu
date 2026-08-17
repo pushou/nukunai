@@ -68,6 +68,9 @@ export def not_legit [] {
 # comme littéral : polars `contains` attend une regex, la forme ^(p1|p2|…) évite
 # tout faux positif (ex. 'ee151.101' ne matche pas '151.101').
 export def starts_with_any [col, prefixes: list<string>] {
+    # Une allowlist VIDE ne doit jamais tout matcher (sinon `^(...)` -> `^()` matche
+    # la chaîne vide et donc chaque ligne, ce qui annulerait le filtre).
+    if ($prefixes | is-empty) { return (polars lit false) }
     # échappe chaque préfixe : les métacaractères regex (. * + ? ( ) [ ] { } ^ $ | \) sont
     # précédés d'un backslash pour être traités comme littéraux.
     let escaped = ($prefixes | each {|p| $p | str replace -a -r '([\.\+\*\?\(\)\[\]\{\}\$\^\|\\])' '\$1' })
@@ -80,6 +83,8 @@ export def starts_with_any [col, prefixes: list<string>] {
 # quand le préfixe n'est pas en tête de la valeur (ex. command_line = "ln -rs
 # /var/tmp/mkinitramfs_GHWtJR/..."). Échappe les métacaractères regex comme littéraux.
 export def contains_any [col, prefixes: list<string>] {
+    # Une allowlist VIDE doit renvoyer false (ne jamais tout matcher via `(?:)` vide).
+    if ($prefixes | is-empty) { return (polars lit false) }
     let escaped = ($prefixes | each {|p| $p | str replace -a -r '([\.\+\*\?\(\)\[\]\{\}\$\^\|\\])' '\$1' })
     let re = ('(?:' + ($escaped | str join '|') + ')')
     ((polars col $col) | polars contains $re)
@@ -406,10 +411,15 @@ export def detect_connect [base] {
     # processus légitime de téléchargement. => bénin, on n'alerte pas.
     let c_allow_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
     let c_allow_proc = (is_in_df 'task_name' (local_cfg allowlist_egress_procs))
+    # egress par chemin de la command_line (binaires à task_name instable : threads
+    # ELK elasticsearch/logstash/kibana). Corrélation CONTEXTE LOCAL (profil).
+    let c_allow_path = (contains_any 'command_line' (local_cfg allowlist_egress_paths))
     let c_allow_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
+    # process légitime = task_name allowlisté OU chemin de command_line allowlisté.
+    let c_allow_proc_or_path = (($c_allow_proc) or ($c_allow_path))
     # public_egress SUSPECT = destination publique NON allowlistée, OU destination
     # publique allowlistée mais vers un port inhabituel (ex. C2 sur 31337 d'une IP CDN).
-    let c_egress_susp = ($c_public and (($c_allow_net and $c_allow_proc and $c_allow_port) | polars expr-not))
+    let c_egress_susp = ($c_public and (($c_allow_net and $c_allow_proc_or_path and $c_allow_port) | polars expr-not))
     if (not (has_events $base 'connect')) { return (empty_like $base) }
 
     $base
@@ -443,11 +453,15 @@ export def detect_send_data [base] {
     # entropie élevée. On ne le signale que si la destination est PUBLIQUE.
     let c_allow_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
     let c_allow_proc = (is_in_df 'task_name' (local_cfg allowlist_egress_procs))
+    # egress par chemin de la command_line (binaires à task_name instable : threads
+    # ELK elasticsearch/logstash/kibana). Corrélation CONTEXTE LOCAL (profil).
+    let c_allow_path = (contains_any 'command_line' (local_cfg allowlist_egress_paths))
     let c_allow_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
     # egress autorisé = destination publique allowlistée (CDN/dépôt) + process légitime
-    # + port standard. Un tel download vers une cible réputée est bénin, même si le
-    # contenu est chiffré (entropie élevée) : le TLS vers crates.io/GitHub est normal.
-    let c_allow_egress = ($c_allow_net and $c_allow_proc and $c_allow_port)
+    # (task_name OU chemin) + port standard. Un tel download vers une cible réputée est
+    # bénin, même si le contenu est chiffré (entropie élevée) : TLS vers crates.io/GitHub.
+    let c_allow_proc_or_path = (($c_allow_proc) or ($c_allow_path))
+    let c_allow_egress = ($c_allow_net and $c_allow_proc_or_path and $c_allow_port)
     let c_egress_susp = ($c_public and ($c_allow_egress | polars expr-not))
     # high_entropy / large_data SUSPECTES = envoi vers l'extérieur NON allowlisté
     # (C2/exfil). Le chiffrement vers une cible réputée (agent->manager TLS interne
@@ -480,6 +494,14 @@ export def detect_dns_query [base] {
     let c_tld    = (r_dns_suspicious_tld)
     let c_long   = (r_dns_long_query)
     let c_nondns = ((((polars col dns_server_ip) | polars is-in (local_cfg dns_ips | polars into-df)) | polars expr-not))
+    # Requêtes DNS bénignes (contexte LOCAL, profil) : noms de service internes résolus
+    # par Kibana/libuv (elasticsearch, epr.elastic.co…) via le résolveur Docker 127.0.0.11.
+    # Une requête bénigne ne doit déclencher AUCUNE évidence dns_query (ni length, ni
+    # non_standard_dns_server, ni tld) — on neutralise les 3 signaux quand elle matche.
+    let c_benign = (contains_any 'query' (local_cfg allowlist_dns_queries))
+    let c_tld_s    = (($c_tld)    and (($c_benign) | polars expr-not))
+    let c_long_s   = (($c_long)   and (($c_benign) | polars expr-not))
+    let c_nondns_s = (($c_nondns) and (($c_benign) | polars expr-not))
     if (not (has_events $base 'dns_query')) { return (empty_like $base) }
 
     $base
@@ -489,9 +511,9 @@ export def detect_dns_query [base] {
     | polars filter ((polars col query) | polars is-not-null)
     | (cols_keep [utc_time task_name task_pid command_line query response dns_server_ip])
     | polars with-column (
-        (polars when $c_long (polars lit "suspicious_length")
-         | polars when $c_nondns (polars lit "non_standard_dns_server")
-         | polars when $c_tld (polars lit "suspicious_tld")
+        (polars when $c_long_s (polars lit "suspicious_length")
+         | polars when $c_nondns_s (polars lit "non_standard_dns_server")
+         | polars when $c_tld_s (polars lit "suspicious_tld")
          | polars otherwise (polars lit "none"))
         | polars as evidence)
     | polars filter ((polars col evidence) != 'none')
@@ -879,7 +901,13 @@ def main [
     --no-convert                         # désactiver la conversion auto gz/jsonl->parquet
     --force-convert                      # reconvertir même si le cache parquet est à jour
     --cache-dir: string                  # dossier pour les parquet de conversion (défaut : à côté de la source)
+    --profile (-p): string               # profil local_cfg (hostname par défaut, ex. "elastic")
 ] {
+    # Sélection du profil de config locale : --profile explicite > $env.KUNAI_PROFILE
+    # > hostname (géré dans kunai_local_cfg.nu/load_cfg). On propage le --profile au
+    # module importé via la variable d'env partagée dans le même process.
+    if ($profile | is-not-empty) { $env.KUNAI_PROFILE = $profile }
+
     # fichiers par défaut : les 2 .gz les plus récents du registry.
     # On exclut toujours le fichier vivant `events.log` (log non compressé en cours
     # d'écriture), en plus du filtre sur l'extension .gz.

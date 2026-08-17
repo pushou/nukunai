@@ -5,8 +5,10 @@ Dernière mise à jour : 2026-08-17 (après refactor pot commun + intégration d
 
 Rappel : le projet a été **refactorisé** dans le dernier commit (`05bbbe2`). Les règles
 génériques vivent dans le pot commun (`kunai_rules.nu` + fichiers `.kun` `kunai_rules/rules_v0.1/`),
-le contexte machine (allowlists agents/réseaux/chemins) dans `kunai_rules_local.nu`,
-et le moteur d'analyse (`kunai_detect_compromise.nu`) compose les deux.
+le contexte machine (allowlists agents/réseaux/chemins) dans `kunai_local_cfg.nu` (socle
+`default` + profils par machine), exposé au moteur via l'interface `kunai_rules_local.nu`
+(`local_cfg <clé> --profile <nom>`), et le moteur d'analyse (`kunai_detect_compromise.nu`)
+compose les deux.
 
 ---
 
@@ -325,3 +327,104 @@ Telnet port 23).
   plages `99.86.` (AMAZO-CF /16) et `3.162.` (CloudFront /14) à `allowlist_public_networks`,
   et clarification du process worker `https` (`/usr/lib/apt/methods/https`, transport TLS
   d'apt) dans `allowlist_egress_procs`.
+
+---
+
+## 21. `kunai_rules_local.nu` n'est PAS transformable en règles kunai `.kun` (décision)
+
+**Type :** décision (2026-08-17)
+
+Question posée : « `kunai_rules_local.nu` est-il transformable en règles kunai `.kun` ? »
+Réponse : **non**, et c'est une propriété voulue de l'architecture, pas une limite à lever.
+C'est le pendant exact de la séparation pot commun / contexte local documentée en §16.
+
+**Rappel du rôle des deux fichiers :**
+- `kunai_rules.nu` + `kunai_rules/rules_v0.1/*.kun` : **générique** = phénotypes d'ATTAQUE
+  réutilisables (« si X alors ALERTE »). Transparent en gene : une règle `.kun` = 1 alerte.
+- `kunai_rules_local.nu` : **contexte machine** = allowlists de l'hôte (« si X alors NE PAS
+  alerter ») : agents, utilitaires bénins, IP/ports/chemins/signaux légitimes.
+
+**Pourquoi la conversion échoue (4 raisons) :**
+
+1. **Nature du DSL gene = détection, pas exclusion.** Une règle `.kun` décrit `match-on`
+   (quels événements) + `condition` → produit un événement détecté. Il n'existe pas de mécanisme
+   natif « allowlist de process/chemin » ni d'exclusion : chaque règle sort une alerte qu'il
+   faudrait ENSUITE retirer par le contexte local. gene mélangerait détection et contexte dans
+   une même règle, l'opposé de l'architecture choisie.
+
+2. **Logique relationnelle (`not_legit`).** Le moteur (`kunai_detect_compromise.nu:50`) classe
+   un process bénin si `task ∈ legit` OU (`task ∈ benign_utilities` ET `parent ∈ legit ∪ utils`).
+   Cette dépendance à la **chaîne de processus (parent)** est relationnelle : gene n'a pas de
+   notion de parentage pour cela. Un `.kun` ne peut pas exprimer « bénin si le parent est légitime ».
+
+3. **Pas de littéral de liste en gene.** gene n'a **ni `in [...]`, ni opérateur de liste**
+   (cf. §18). `legit_agents` (≈62 entrées) ou `benign_utilities` (≈60) deviendraient chacun une
+   condition `or` gigantesque, fragile et illisible.
+
+4. **Contre la portabilité du pot commun.** Les IP/chemins/agents de `local_cfg` sont propres à
+   CET hôte/registre (ex. `10.6.255.106`, `registry.iutbeziers.fr`, `~/.cargo` de l'utilisateur
+   `nushell`). Les glisser dans les `.kun` casserait la réutilisabilité du pot commun générique.
+
+**Ce qui EST (déjà) exprimable en `.kun`** : uniquement les plages réseau via regex `~=`
+(`starts_with_any` du moteur en est exactement la transposition), ex. un `exfil_public_egress`
+avec `allowlist_public_networks` en négation regex. Mais même ces plages restent du contexte
+local et NE doivent PAS être dans les `.kun` génériques.
+
+**Conclusion immuable :** le contexte machine vit dans `kunai_local_cfg.nu` (consommé par le
+moteur nushell/polars, via l'interface `kunai_rules_local.nu` : `not_legit`, `expr-not egress
+allowlist`, `expr-not build/initramfs`). Ne pas tenter de convertir `local_cfg` en `.kun`. La
+seule zone de traduction légitime est le pot commun `kunai_rules.nu -> .kun` (déjà fait, §16),
+jamais l'allowlist locale.
+
+---
+
+## 22. Paramétrisation par machine — `kunai_local_cfg.nu` (décision 2026-08-17)
+
+**Type :** décision
+
+`kunai_rules_local.nu` est devenu une INTERFACE MINCE : la source de vérité des allowlists
+machine vit désormais dans **`kunai_local_cfg.nu`**, un fichier de DONNÉES à deux étages :
+
+- **socle `default`** — générique, strict, identique à l'ancien contenu de `kunai_rules_local.nu`
+  (62 `legit_agents`, 32 `allowlist_public_networks`, `dns_ips` = `10.6.255.106`, …) ;
+- **`profiles`** — un bloc par machine / registre (ex. `elastic` pour la stack ELK/tpot du
+  rapport de scan). Ne contient QUE les clés qui changent (les autres héritent de `default`).
+
+**Sélection du profil** (priorité décroissante, dans `current_profile`/`load_cfg`) :
+1. `local_cfg <clé> --profile <nom>` explicite ;
+2. `$env.KUNAI_PROFILE` — **posé par le moteur** depuis son flag `--profile`/`-p` dans `main` ;
+3. `hostname` de la machine ;
+4. sinon `default`.
+
+**Fusion socle+profil** (dans `load_cfg`) : clé ABSENTE du profil → hérite de `default` ; liste
+SANS marqueur → REMPLACE celle de `default` ; liste portant `['__append__', …]` → CONCATÈNE
+socle+profil. `load_cfg` retourne une record plate avec TOUTES les clés attendues par le moteur.
+
+**Nouvelles clés profilables (vides par défaut)** pour le bruit de la stack ELK/tpot (386 connect
++ 24 311 send_data + 28 dns_query sur le rapport de scan initial) :
+- `allowlist_egress_paths` — MATCH `command_line` (`contains_any`), corrélé dans `detect_connect`
+  et `detect_send_data` en plus de `allowlist_egress_procs` (`task_name` instable pour les
+  threads ELK : `elastic..][T#3]`, `node/libuv-worker`). Valeurs elastic : `/usr/share/
+  elasticsearch/`, `/usr/share/logstash/`, `/usr/share/kibana/`.
+- `allowlist_dns_queries` — MATCH `query`, corrélé dans `detect_dns_query` : neutralise les 3
+  signaux (length / non_standard_dns_server / tld) d'une requête bénigne. Valeurs elastic :
+  `epr.elastic.co`, `infra-cdn.elastic.co`, `elasticsearch` (résolus via le résolveur Docker
+  `127.0.0.11`, ajouté à `dns_ips` du profil).
+
+**Préfixes IP** : les réseaux docker/privés doivent être au format IPv4-mappé (`::ffff:172.19.`…)
+car kunai rend les adresses ainsi ; `allowlist_public_networks` matche un préfixe exact via
+`starts_with_any`.
+
+**Robustesse liste vide** : `starts_with_any`/`contains_any` retournent `polars lit false` sur une
+liste VIDE, sinon une regex `^()`/`(?:)` matcherait la chaîne vide (donc chaque ligne) et
+annulerait le filtre. Correctif générique sain pour toutes les familles.
+
+**Pièges nushell corrigés pendant la réécriture :**
+- `get -i` déprécié (0.114) → `--optional`.
+- `is-null` n'existe pas → comparaison `== null`.
+- `list ++ list` pour concaténer (PAS `append`, qui imbrique un élément au lieu d'aplatir),
+  puis `uniq` pour l'union des clés socle+profil.
+
+Validé : profil `elastic` (egress_paths=3, dns_queries=3, dns_ips=10.6.255.106+127.0.0.11+
+127.0.0.1, pubnet_len=52) et fallback `default` (egress_paths vide, pubnet_len=32). Le moteur
+s'exécute sans erreur sur ngsoti avec `--profile elastic` (listes non vides) et en défaut.
