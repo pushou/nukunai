@@ -16,8 +16,8 @@ pour analyser, filtrer et détecter des compromissions dans des logs **kunai** (
 ```
 kunai_detect_compromise.nu   moteur : compose générique + local, 9 familles, rapports
 kunai_rules.nu               POT COMMUN exécutable : r_<fam>_<nom> -> Expr polars (générique, sans contexte machine)
-kunai_rules_local.nu         CONTEXTE LOCAL machine : INTERFACE fine (contrat local_cfg <nom> --profile) vers kunai_local_cfg.nu
-kunai_local_cfg.nu          DONNÉES paramétrables : socle `default` + `profile` par machine (ex. "elastic")
+kunai_rules_local.nu         CONTEXTE LOCAL : INTERFACE fine (contrat local_cfg <nom> --profile) vers kunai_local_cfg.nu
+kunai_local_cfg.nu          DONNÉES paramétrables : socle `default` + profils par FONCTION (dns/network/docker/elk/kube)
 kunai_rules/rules_v0.1/*.kun   pot commun interopérable kunai/gene (mêmes indicateurs que kunai_rules.nu)
 kunai_to_parquet.nu          conversion gz/jsonl -> parquet (lazy par défaut)
 kunai_to_flatten_parquet.nu  conversion + flatten complet
@@ -34,16 +34,19 @@ ngsoti_detail.nu / ngsoti_all.nu / ngsoti_report.nu   wrappers sur le dataset ng
   retourne une Expr polars, `r_ev_<famille>_<nom>` retourne le libellé d'evidence.
 - Une **allowlist / contexte machine** (agents de l'hôte, IP locales, ports/chemins bénins,
   chaîne build rustup/cargo/rustc/cc…) vit dans `kunai_local_cfg.nu` (socle `default` strict +
-  profils par machine). `kunai_rules_local.nu` n'est plus qu'une INTERFACE : `local_cfg <clé>
-  --profile <nom>` résout le profil (explicite > `$env.KUNAI_PROFILE` > hostname > `default`)
-  et fusionne socle+profil. Chaque HOSTNAME / registre dispose de son propre profil.
+  profils par FONCTION). `kunai_rules_local.nu` n'est plus qu'une INTERFACE : `local_cfg <clé>
+  --profile "a,b"` résout les FONCTIONS actives (explicite > `$env.KUNAI_PROFILE` > `all`) et
+  fusionne socle+fonctions. Les profils sont des THÉMATIQUES d'allowlist (dns, network, docker,
+  elk, kube), PAS des machines : le profil `all` (DÉFAUT) les prend tous.
 - Le **moteur** consomme `use kunai_rules_local.nu local_cfg` et `use kunai_rules.nu *`, puis
   **compose** en gardant les règles génériques MAIS en retirant le bruit local (build, egress
   allowlisté, signaux bénins). Le flag `--profile`/`-p` de `main` pose `$env.KUNAI_PROFILE`.
-- Sélection du profil (priorité décroissante) : `local_cfg <clé> --profile <nom>` explicite >
-  `$env.KUNAI_PROFILE` (posé par le moteur depuis son `--profile`) > `hostname` > `default`.
-- Fusion socle+profil : clé ABSENTE du profil → hérite de `default` ; liste SANS marqueur →
-  REMPLACE celle de `default` ; liste portant `['__append__', …]` → CONCATÈNE socle+profil.
+- Sélection des fonctions (priorité décroissante) : `local_cfg <clé> --profile "a,b"` explicite >
+  `$env.KUNAI_PROFILE` (posé par le moteur depuis son `--profile`) > `all` (toutes les fonctions,
+  dans l'ordre canonique dns/network/docker/elk/kube). Le socle `default` est TOUJOURS appliqué.
+- Fusion socle+fonctions : le socle est la base ; chaque fonction n'étend QUE les clés de sa
+  thématique ; liste SANS marqueur → REMPLACE le socle ; liste portant `['__append__', …]` →
+  CONCATÈNE (dédupliqué) dans l'ordre des fonctions actives.
 
 ## Règles métier / contexte local (résumé)
 
@@ -65,11 +68,11 @@ ngsoti_detail.nu / ngsoti_all.nu / ngsoti_report.nu   wrappers sur le dataset ng
   (dont les plages 99.86./3.162. AMAZO-CF) et le process worker `https` — transport TLS
   d'apt (/usr/lib/apt/methods/https) qui télécharge les paquets.
 - `allowlist_egress_paths` (MATCH command_line, corrélé dans detect_connect/send_data) et
-  `allowlist_dns_queries` (MATCH query, corrélé dans detect_dns_query) : profilables, vides
-  par défaut. Servent au bruit de la stack ELK/tpot (threads à tâche instable
-  elasticsearch/logstash/kibana résolus via le résolveur Docker 127.0.0.11). Les helpers
-  `starts_with_any`/`contains_any` renvoient `lit false` sur une liste VIDE (une allowlist
-  vide ne doit jamais tout matcher).
+  `allowlist_dns_queries` (MATCH query, corrélé dans detect_dns_query) : profilables (fonctions
+  `elk` / `dns`), vides par défaut. Servent au bruit de la stack ELK/tpot (threads à tâche
+  instable elasticsearch/logstash/kibana résolus via le résolveur Docker 127.0.0.11). Les
+  helpers `starts_with_any`/`contains_any` renvoient `lit false` sur une liste VIDE (une
+  allowlist vide ne doit jamais tout matcher).
 - `benign_signals` : SIGURG/SIGCHLD/SIGCONT/SIGWINCH/SIGIO/SIGPIPE (régulation docker/Go, jamais un kill suspect).
 
 ## Concepts de détection (à préserver)

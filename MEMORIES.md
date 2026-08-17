@@ -6,8 +6,9 @@ Dernière mise à jour : 2026-08-17 (après refactor pot commun + intégration d
 Rappel : le projet a été **refactorisé** dans le dernier commit (`05bbbe2`). Les règles
 génériques vivent dans le pot commun (`kunai_rules.nu` + fichiers `.kun` `kunai_rules/rules_v0.1/`),
 le contexte machine (allowlists agents/réseaux/chemins) dans `kunai_local_cfg.nu` (socle
-`default` + profils par machine), exposé au moteur via l'interface `kunai_rules_local.nu`
-(`local_cfg <clé> --profile <nom>`), et le moteur d'analyse (`kunai_detect_compromise.nu`)
+`default` toujours appliqué + profils par FONCTION `dns`/`network`/`docker`/`elk`/`kube`,
+`all` par défaut), exposé au moteur via l'interface `kunai_rules_local.nu`
+(`local_cfg <clé> --profile "a,b"`), et le moteur d'analyse (`kunai_detect_compromise.nu`)
 compose les deux.
 
 ---
@@ -378,38 +379,63 @@ jamais l'allowlist locale.
 
 ---
 
-## 22. Paramétrisation par machine — `kunai_local_cfg.nu` (décision 2026-08-17)
+## 22. Paramétrisation par FONCTION — `kunai_local_cfg.nu` (décision 2026-08-17)
 
 **Type :** décision
 
 `kunai_rules_local.nu` est devenu une INTERFACE MINCE : la source de vérité des allowlists
-machine vit désormais dans **`kunai_local_cfg.nu`**, un fichier de DONNÉES à deux étages :
+machine vit dans **`kunai_local_cfg.nu`**, un fichier de DONNÉES à deux étages :
 
 - **socle `default`** — générique, strict, identique à l'ancien contenu de `kunai_rules_local.nu`
   (62 `legit_agents`, 32 `allowlist_public_networks`, `dns_ips` = `10.6.255.106`, …) ;
-- **`profiles`** — un bloc par machine / registre (ex. `elastic` pour la stack ELK/tpot du
-  rapport de scan). Ne contient QUE les clés qui changent (les autres héritent de `default`).
+- **`function_profiles`** — des profils **par FONCTION** (thématiques d'allowlist) combina­bles :
+  `dns` / `network` / `docker` / `elk` / `kube`. Chaque fonction ne touche QUE les clés de sa
+  thématique ; le profil `all` (DÉFAUT) les prend TOUS.
 
-**Sélection du profil** (priorité décroissante, dans `current_profile`/`load_cfg`) :
-1. `local_cfg <clé> --profile <nom>` explicite ;
+Cette refonte (commit `2078edd`, 2026-08-17) remplace l'ancien modèle **par machine** (profil
+`elastic` clavé sur le hostname tpot) : l'auto-détection par `hostname` échouait car la machine
+d'analyse (PC-JMP) n'avait pas de clé → retombait sur `default` et le bruit `127.0.0.11` du
+registre tpot n'était pas filtrable sans `--profile elastic` explicite. Désormais la sélection
+par défaut est `all` (toutes fonctions), sans rien configurer.
+
+**Répartition des fonctions (ordre canonique, cf. `fn_order`) :**
+- `dns` — résolveurs DNS légitimes (`dns_ips` += `127.0.0.11`, `127.0.0.1`) + requêtes DNS
+  internes (`allowlist_dns_queries` += `epr.elastic.co`, `infra-cdn.elastic.co`, `elasticsearch`).
+- `network` — egress réseau légitime universel (`allowlist_egress_ports` `[443,80,53]`,
+  `allowlist_egress_procs` `['https']`, redondant avec le socle).
+- `docker` — réseaux docker/hôte internes vus en `::ffff:` (`allowlist_public_networks` +=
+  `::ffff:172.16.–172.31.`, `::ffff:10.6.`, `::ffff:127.0.0.`, `::ffff:51.89.`) + `127.0.0.11`.
+- `elk` — stack Elasticsearch/Logstash/Kibana (`allowlist_egress_paths` = chemins
+  `/usr/share/{elasticsearch,logstash,kibana}/`, `allowlist_public_networks` += `34.120.`,
+  `allowlist_dns_queries` += requêtes ELK).
+- `kube` — (réservé, vide) réseaux/services Kubernetes.
+
+Le **socle `default`** (mécanismes du socle : `legit_agents`, `benign_utilities`, chaîne build,
+initramfs, `benign_signals`) est TOUJOURS appliqué quel que soit le choix de fonctions.
+
+**Sélection des FONCTIONS** (priorité décroissante, dans `current_profile`/`load_cfg`) :
+1. `local_cfg <clé> --profile "a,b"` explicite (liste CSV de fonctions) ;
 2. `$env.KUNAI_PROFILE` — **posé par le moteur** depuis son flag `--profile`/`-p` dans `main` ;
-3. `hostname` de la machine ;
-4. sinon `default`.
+3. sinon `all` (toutes les fonctions, dans l'ordre canonique ci-dessus).
 
-**Fusion socle+profil** (dans `load_cfg`) : clé ABSENTE du profil → hérite de `default` ; liste
-SANS marqueur → REMPLACE celle de `default` ; liste portant `['__append__', …]` → CONCATÈNE
-socle+profil. `load_cfg` retourne une record plate avec TOUTES les clés attendues par le moteur.
+`current_profile` retourne la LISTE des fonctions actives ; `load_cfg` part du socle puis
+CONCATÈNE chaque fonction active dans l'ordre (fusion `merge_lists`, sémantique `__append__`).
+
+**Fusion socle+fonctions** (dans `load_cfg`) : le socle est la base ; chaque fonction n'étend QUE
+les clés de sa thématique ; liste SANS marqueur → REMPLACE celle du socle ; liste portant
+`['__append__', …]` → CONCATÈNE (dédupliqué) dans l'ordre des fonctions actives. `load_cfg`
+retourne une record plate avec TOUTES les clés attendues par le moteur.
 
 **Nouvelles clés profilables (vides par défaut)** pour le bruit de la stack ELK/tpot (386 connect
 + 24 311 send_data + 28 dns_query sur le rapport de scan initial) :
 - `allowlist_egress_paths` — MATCH `command_line` (`contains_any`), corrélé dans `detect_connect`
   et `detect_send_data` en plus de `allowlist_egress_procs` (`task_name` instable pour les
-  threads ELK : `elastic..][T#3]`, `node/libuv-worker`). Valeurs elastic : `/usr/share/
+  threads ELK : `elastic..][T#3]`, `node/libuv-worker`). Fonction `elk` : `/usr/share/
   elasticsearch/`, `/usr/share/logstash/`, `/usr/share/kibana/`.
 - `allowlist_dns_queries` — MATCH `query`, corrélé dans `detect_dns_query` : neutralise les 3
-  signaux (length / non_standard_dns_server / tld) d'une requête bénigne. Valeurs elastic :
+  signaux (length / non_standard_dns_server / tld) d'une requête bénigne. Fonctions `dns`/`elk` :
   `epr.elastic.co`, `infra-cdn.elastic.co`, `elasticsearch` (résolus via le résolveur Docker
-  `127.0.0.11`, ajouté à `dns_ips` du profil).
+  `127.0.0.11`, ajouté à `dns_ips`).
 
 **Préfixes IP** : les réseaux docker/privés doivent être au format IPv4-mappé (`::ffff:172.19.`…)
 car kunai rend les adresses ainsi ; `allowlist_public_networks` matche un préfixe exact via
@@ -423,16 +449,20 @@ annulerait le filtre. Correctif générique sain pour toutes les familles.
 - `get -i` déprécié (0.114) → `--optional`.
 - `is-null` n'existe pas → comparaison `== null`.
 - `list ++ list` pour concaténer (PAS `append`, qui imbrique un élément au lieu d'aplatir),
-  puis `uniq` pour l'union des clés socle+profil.
+  puis `uniq` pour l'union des clés socle+fonctions.
 
-Validé : profil `elastic` (egress_paths=3, dns_queries=3, dns_ips=10.6.255.106+127.0.0.11+
-127.0.0.1, pubnet_len=52) et fallback `default` (egress_paths vide, pubnet_len=32). Le moteur
-s'exécute sans erreur sur ngsoti avec `--profile elastic` (listes non vides) et en défaut.
+Validé (profil par défaut `all` = socle + toutes fonctions) : 
+- tpot `kunai_tpot/events.log.3923.gz` → **connect 0, send_data 54, dns_query 0** (zéro FP du
+  réseau docker ELK), sans aucun `--profile` explicite ;
+- non-régression ngsoti `15e67237…` → connect 18, send_data 9280 (identique avant/après).
+- Sélection restreinte vérifiée : `--profile "dns"` garde le socle + dns (dns_ips =
+  10.6.255.106 + 127.0.0.11 + 127.0.0.1) sans les chemins ELK ; `--profile "docker"` donne
+  dns_ips = 10.6.255.106 + 127.0.0.11 (sans 127.0.0.1).
 
 ## 23. Bug kunai `dst_public` sur RFC1918 IPv4-mappées — correctif GÉNÉRIQUE (2026-08-17)
 
 **Constat** : sur un registre tpot (`kunai_tpot/events.log.3923.gz`), le bruit n'était PAS réglé
-par le profil `elastic` seul (connect 386→384, send_data 24311→24307) : il subsistait car la
+par les allowlists ELK seules (connect 386→384, send_data 24311→24307) : il subsistait car la
 cause racine était ailleurs que dans les `command_line` ELK.
 
 **Diagnostic** : kunai rend `dst_public=true` pour des adresses **IPv4-mappées `::ffff:` privées
@@ -448,13 +478,13 @@ est qualifié à tort de `public_egress`.
 `c_public = (dst_public == true) AND (NOT is_private_dst)`. Un RFC1918 mappé n'est JAMAIS un
 C2 externe → ce n'est pas de l'egress public.
 
-**Résultat sur le registre tpot (profil elastic)** :
+**Résultat sur le registre tpot (profil par défaut `all`)** :
 - connect 384 → **0** (tout `::ffff:10.6.255.134` interne).
 - send_data 24307 → **54** : restent UNIQUEMENT les destinations réellement PUBLIQUES
   (`51.89.235.201` OVH ×51, `16.176.125.169` CloudFront ×2, `52.180.136.250` Azure ×1) = le vrai
   signal d'exfiltration à investiguer. Aucun RFC1918 survivant.
 - Non-régression : ngsoti `15e67237…` identique avant/après (connect 18, send_data 9280, tous
-  publics, 0 RFC1918 résiduel), en défaut ET avec `--profile elastic`.
+  publics, 0 RFC1918 résiduel), en défaut ET avec fonctions restreintes.
 
 **À retenir** : ne JAMAIS se fier à la colonne `dst_public` seule pour qualifier un egress
 public ; filtrer d'abord les plages privées/mappées (correction générique, pas une allowlist
