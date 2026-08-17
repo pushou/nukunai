@@ -32,6 +32,7 @@ export def local_cfg [name: string] {
                            'crowdsec','cscli','splunk','splunkforwarder',
                            'check_mk_agent','cmk-agent-ctl','sqv','nginx','nginx-worker','sshd','sshd-auth',
                            'cron','crond','dbus-daemon','polkitd','NetworkManager','unattended-upgrade',
+                           'chronyd','chrony','systemd-timesyn','systemd-timesyncd',
                            'auditd','auditctl','auditd-manager','augenrules','aureport','ausearch']
         # utilitaires banals / commandes système standard. Bénins UNIQUEMENT quand ils
         # proviennent d'une chaîne légitime (voir not_legit) : un docker/chmod/curl/perl/
