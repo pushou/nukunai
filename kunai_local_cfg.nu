@@ -1,31 +1,37 @@
 #!/usr/bin/env nu
 # kunai_local_cfg.nu
 #
-# CONFIG LOCALE PARAMÉTRABLE — contexte machine "registry" / plateforme.
+# CONFIG LOCALE PARAMÉTRABLE — middleware de sélection des allowlists.
 #
 # C'est LE fichier de données qui rend `kunai_rules_local.nu` paramétrable.
 # Il contient :
-#   1. un socle `default` GÉNÉRIQUE (commun à toutes les machines, strict) ;
-#   2. des `profiles` PAR MACHINE / PAR REGISTRE, identifiés par le hostname de
-#      l'hôte analysé OU par un `--profile` explicite passé à la ligne de commande.
+#   1. un socle `default` GÉNÉRIQUE (commun à toutes les plateformes, strict) ;
+#   2. des `function_profiles` PAR FONCTION (thématiques d'allowlist), combina­bles.
+#
+# Les profils ne sont PAS par machine : ils sont par FONCTION (thém­atique) —
+#   dns / network / docker / elk / kube — et peuvent être activés indépendamment.
+# Le profil `all` les prend TOUS et est le choix par défaut. On peut restreindre
+# en passant une LISTE de fonctions, ex. --profile "dns,network" pour ne détecter
+# qu'avec les allowlists DNS + réseau (sans docker/elk/kube).
 #
 # Le moteur (kunai_detect_compromise.nu) / l'interface (kunai_rules_local.nu)
-# continuent d'appeler `local_cfg <nom_de_clé>`. La sélection du profil et la
+# continuent d'appeler `local_cfg <nom_de_clé>`. La sélection des fonctions et la
 # fusion avec le socle se font ici, de façon transparente pour l'appelant.
 #
-# ── SÉLECTION DU PROFIL (priorité décroissante) ──────────────────────────
-#   1. `local_cfg <clé> --profile <nom>`   (appel direct / test)
+# ── SÉLECTION DES PROFILS (priorité décroissante) ────────────────────────
+#   1. `local_cfg <clé> --profile "a,b"`   (liste CSV de fonctions / test)
 #   2. `$env.KUNAI_PROFILE`                (posé par le moteur depuis --profile)
-#   3. `hostname` de la machine analysée   (auto-détection)
-#   4. sinon → `default` (socle générique)
+#   3. sinon → `all`                        (TOUTES les fonctions, par défaut)
+# Une valeur 'all' (ou vide) = socle + toutes les fonctions, dans l'ordre
+# canonique [dns, network, docker, elk, kube]. Une valeur a,b = socle + a + b.
 #
-# ── FUSION SOCLE + PROFIL ────────────────────────────────────────────────
-# Chaque clé du profil peut :
-#   * être ABSENTE  → hérite telle quelle de `default` ;
-#   * fournir une LISTE SANS marqueur → REMPLACE la liste de `default` ;
-#   * fournir ['__append__', ...]     → CONCATE `default` ∘ profil (dédupliqué).
-# Toutes les valeurs sont des LISTES (la plus petite est allowlist_egress_ports
-# qui reste une liste d'INT : [443, 80, 53]).
+# ── FUSION SOCLE + FONCTIONS ─────────────────────────────────────────────
+# Chaque fonction ne touche QUE les clés de sa thém­atique (dns_ips / requêtes DNS
+# pour `dns`, réseaux docker pour `docker`, chemins ELK pour `elk`…). Pour une clé
+# partagée entre plusieurs fonctions, on utilise le marqueur '__append__' pour
+# CONCAT (dédupliqué) dans l'ordre des fonctions actives ; sans marqueur, la liste
+# REMPLACE le socle. Toutes les valeurs sont des LISTES (la plus petite est
+# allowlist_egress_ports qui reste une liste d'INT : [443, 80, 53]).
 #
 # ── CONVENTION des préfixes IP ───────────────────────────────────────────
 # `allowlist_public_networks` est comparé au PRÉFIXE EXACT de dst_ip (via
@@ -149,32 +155,44 @@ def default_defs [] {
     }
 }
 
-# Profils PAR MACHINE / PAR REGISTRE. Chaque clé absente hérite du socle ;
-# '__append__' en tête d'une liste = concat avec le socle (dédupliqué).
-def profile_defs [] {
+# Profils PAR FONCTION (thématiques d'allowlist), combina­bles et INDÉPENDANTS.
+# Chaque fonction ne touche QUE les clés de sa thém­atique. Une clé partagée entre
+# plusieurs fonctions utilise '__append__' en tête = concat (dédupliqué) dans
+# l'ordre des fonctions actives ; sans marqueur, la liste remplace le socle.
+#
+# Le profil `all` (DÉFAUT) = socle + TOUTES les fonctions ci-dessous, dans l'ordre
+# canonique : dns, network, docker, elk, kube. Pour n'activer que certaines
+# fonctions : --profile "dns,network" (le socle reste toujours appliqué).
+#
+# ── Ajouter une fonction ──────────────────────────────────────────────────
+# Ajouter un bloc `"<nom>": { ... }` ici puis l'insérer dans l'ordre canonique
+# `fn_order` (voir plus bas). Mettre expressément '__append__' pour étendre une
+# clé déjà fournie par une autre fonction, sinon elle est remplacée.
+def function_profiles [] {
     {
-        # ────────────────────────────────────────────────────────────────
-        # Machine tpot / ELK (analyse anti-FP du rapport
-        #   scanresult20260817_194806/kunai_tp_connect386_send_data24311_dns_query28.md).
-        # Bruit constaté sur cette machine :
-        #   * connect/send_data 386 + 24311 : trafic INTERNE de la stack ELK
-        #       (Elasticsearch <-> Logstash <-> Kibana) sur le réseau docker
-        #       ::ffff:172.19.0.x, vu par kunai comme "public" (dst_public=true
-        #       car IPv4-mappée ::ffff: mal résolue RFC1918) ;
-        #   * dns_query 28 : Kibana(node/libuv-worker) qui résout ses services
-        #       (elasticsearch, epr.elastic.co, infra-cdn.elastic.co) via le
-        #       résolveur Docker embarqué 127.0.0.11 => non_standard_dns_server.
-        # Ce profil permet de ZÉRO-FP sur cette machine sans toucher au socle.
-        # ── Attention (2 points) ────────────────────────────────────────
-        # 1) Le réseau docker entier est ici considéré interne/légitime pour la
-        #    stack ELK. Ce choix est LOCAL à la machine honeypot ; sur une autre
-        #    machine, ne PAS copier ce bloc.
-        # 2) 'elasticsearch' en requête DNS matcherait un domaine contenant ce
-        #    mot ; ici le service interne K8s/docker domine largement le bruit.
-        "elastic": {
-            # Réseaux docker ELK vus en ::ffff: (IPv4-mappée) + labo + loopback mappé.
-            # Table déduite du Bilan du rapport : 172.19.0.x (ELK), 10.6.255.x (labo),
-            # 127.0.0.x (loopback local), 51.89.x (OVH hôte tpot), 34.120.x (elastic CDN).
+        # ── dns : résolveurs DNS et requêtes DNS légitimes ──────────────────
+        # Neutralise `non_standard_dns_server` quand le serveur interrogé est le
+        # résolveur Docker embarqué (127.0.0.11) ou le résolveur local (127.0.0.1),
+        # et neutralise les signaux DNS des requêtes internes (services container,
+        # epr.elastic.co / infra-cdn.elastic.co de la stack ELK).
+        dns: {
+            dns_ips: ['__append__', '127.0.0.11', '127.0.0.1'],
+            allowlist_dns_queries: ['__append__',
+                                    'epr.elastic.co', 'infra-cdn.elastic.co',
+                                    'elasticsearch'],
+        },
+        # ── network : egress réseau légitime universel ──────────────────────
+        # Ports de service et transport TLS d'apt (déjà au socle, rappel explicite
+        # pour qui désactive le socle implicite — redondant mais inoffensif).
+        network: {
+            allowlist_egress_ports: [443, 80, 53],
+            allowlist_egress_procs: ['https'],
+        },
+        # ── docker : réseaux docker/hôte internes vus en ::ffff: ────────────
+        # Réseaux docker ELK (172.16-31./12), labo (10.6.), loopback local mappé
+        # (127.0.0.), OVH hôte tpot (51.89.) — trafic INTERNE, pas un public_egress.
+        # Inclut le résolveur Docker 127.0.0.11 (c.f. fonction dns aussi).
+        docker: {
             allowlist_public_networks: ['__append__',
                                         '::ffff:172.16.', '::ffff:172.17.', '::ffff:172.18.',
                                         '::ffff:172.19.', '::ffff:172.20.', '::ffff:172.21.',
@@ -183,28 +201,32 @@ def profile_defs [] {
                                         '::ffff:172.28.', '::ffff:172.29.', '::ffff:172.30.',
                                         '::ffff:172.31.',
                                         '::ffff:10.6.', '::ffff:127.0.0.',
-                                        '::ffff:51.89.',                      # OVH hôte tpot
-                                        '34.120.'],                          # infra-cdn.elastic.co
-            # Chemins des binaires de la stack ELK : le task_name y est instable
-            # (threads Elasticsearch "elastic..][T#3]", Logstash "[http_output]>w",
-            # node/libuv-worker pour Kibana). On corrèle donc le CHEMIN command_line.
+                                        '::ffff:51.89.'],   # OVH hôte tpot
+            dns_ips: ['__append__', '127.0.0.11'],
+        },
+        # ── elk : stack Elasticsearch/Logstash/Kibana ───────────────────────
+        # Chemins des binaires ELK (task_name instable : threads Elasticsearch
+        # "elastic..][T#3]", Logstash "[http_output]>w", node/libuv-worker pour
+        # Kibana) corrélés sur la command_line, + CDN d'infra Elastic (34.120.).
+        elk: {
             allowlist_egress_paths: ['/usr/share/elasticsearch/',
                                      '/usr/share/logstash/',
                                      '/usr/share/kibana/'],
-            # Résolveur DNS Docker embarqué (127.0.0.11) + résolveur local loopback :
-            # Kibana/les conteneurs y résolvent leurs services -> plus de FP
-            # `non_standard_dns_server` quand le serveur DNS est celui-ci.
-            dns_ips: ['__append__', '127.0.0.11', '127.0.0.1'],
-            # Requêtes DNS internes de la stack ELK (Kibana -> services container).
-            allowlist_dns_queries: ['epr.elastic.co', 'infra-cdn.elastic.co',
+            allowlist_public_networks: ['__append__', '34.120.'],   # infra-cdn.elastic.co
+            allowlist_dns_queries: ['__append__',
+                                    'epr.elastic.co', 'infra-cdn.elastic.co',
                                     'elasticsearch'],
         },
-        # (exemple : la machine "registry" de développement est le socle strict,
-        #  aucun profil nécessaire — le fichier précédent kunai_rules_local.nu
-        #  constitue exactement le `default` ci-dessus. Ajouter ici un profil si
-        #  cette machine a des spécificités supplémentaires.)
+        # ── kube : (réservé) réseaux/services Kubernetes ────────────────────
+        # Ex. 10.96.0.0/12 (ClusterIP), 10.244.0.0/16 (CNI Flannel), noms de service
+        # '<svc>.<ns>.svc.*'. Vide par défaut ; à remplir selon la plateforme.
+        kube: {
+        },
     }
 }
+
+# Ordre canonique des fonctions pour le profil `all` (et l'affichage).
+def fn_order [] { ['dns', 'network', 'docker', 'elk', 'kube'] }
 
 # =====================================================================
 # Logique de fusion et de sélection — NE PAS MODIFIER
@@ -219,33 +241,39 @@ def merge_lists [base: list<any>, extra: list<any>] {
     }
 }
 
-# Charge la config résolue pour le profil sélectionné (socle + profil fusionnés).
+# charge la config résolue pour les FONCTIONS actives (socle + fonctions fusionnés).
 # Retourne une record plate contenant TOUTES les clés attendues par le moteur.
 # Usage interne : `kunai_rules_local.nu` l'appelle puis fait `.<nom_de_clé>`.
 export def load_cfg [--profile: string] {
-    let host = (current_profile --profile=$profile)
-    let cfg = { default: (default_defs), profiles: (profile_defs) }
-    let prof = ($cfg.profiles | get --optional $host | default {})
+    let base = (default_defs)
+    let fns  = (current_profile --profile=$profile)
 
-    # clés = union(keys default, keys profil) — on garde l'ordre du default d'abord.
-    let keys = (($cfg.default | columns) ++ ($prof | columns) | uniq)
-    $keys | reduce -f {} {|k, acc|
-        let base_v = ($cfg.default | get --optional $k | default [])
-        let prof_v = ($prof | get --optional $k)
-        let v = (if ($prof_v == null) { $base_v } else { (merge_lists $base_v $prof_v) })
-        $acc | upsert $k $v
+    # On part du socle, puis on CONCATÈNE chaque fonction active dans l'ordre.
+    # merge_lists applique la sémantique '__append__' (concat dedup) sinon remplace.
+    $fns | reduce -f $base {|fn, acc|
+        let prof = (function_profiles | get --optional $fn | default {})
+        ($prof | columns) | reduce -f $acc {|k, a|
+            let base_v = ($a | get --optional $k | default [])
+            let fn_v   = ($prof | get $k)
+            let v      = (if ($fn_v == null) { $base_v } else { (merge_lists $base_v $fn_v) })
+            $a | upsert $k $v
+        }
     }
 }
 
-# Nom du profil résolu (pour affichage / debug).
-# Priorité : --profile explicite > $env.KUNAI_PROFILE (posé par le moteur) > hostname.
+# Liste des FONCTIONS actives (liste de noms), pour affichage / debug.
+# Priorité : --profile explicite > $env.KUNAI_PROFILE (posé par le moteur) > `all`.
+# 'all' (ou valeur vide / inconnue) = toutes les fonctions dans l'ordre canonique.
+# Une valeur "a,b" = socle + a + b (dans l'ordre canonique filtré).
 export def current_profile [--profile: string] {
     let env_prof = ($env | get --optional KUNAI_PROFILE | default '')
-    if ($profile | is-not-empty) {
-        $profile
-    } else if (($env_prof | str trim) != '') {
-        $env_prof
+    let sel = (if ($profile | is-not-empty) { $profile } else if (($env_prof | str trim) != '') { $env_prof } else { 'all' })
+    let order = (fn_order)
+    if (($sel | str trim) == 'all') {
+        $order
     } else {
-        (hostname | str trim)
+        # filtre l'ordre canonique sur la sélection CSV (déduplique et ordonne).
+        ($sel | split row ',' | each {|s| $s | str trim } | where {|s| $s != '' })
+        | reduce -f [] {|s, acc| if ($order | any {|o| $o == $s }) { $acc | append $s } else { $acc } }
     }
 }

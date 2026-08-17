@@ -932,11 +932,11 @@ def main [
     --no-convert                         # désactiver la conversion auto gz/jsonl->parquet
     --force-convert                      # reconvertir même si le cache parquet est à jour
     --cache-dir: string                  # dossier pour les parquet de conversion (défaut : à côté de la source)
-    --profile (-p): string               # profil local_cfg (hostname par défaut, ex. "elastic")
+    --profile (-p): string               # fonctions local_cfg actives : ex. "dns,network" (défaut : "all" = toutes)
 ] {
-    # Sélection du profil de config locale : --profile explicite > $env.KUNAI_PROFILE
-    # > hostname (géré dans kunai_local_cfg.nu/load_cfg). On propage le --profile au
-    # module importé via la variable d'env partagée dans le même process.
+    # Sélection des FONCTIONS de config locale : --profile explicite (liste CSV de
+    # fonctions) > $env.KUNAI_PROFILE > "all" (toutes fonct­ions — cf. kunai_local_cfg.nu).
+    # On propage le --profile au module importé via la variable d'env du process.
     if ($profile | is-not-empty) { $env.KUNAI_PROFILE = $profile }
 
     # fichiers par défaut : les 2 .gz les plus récents du registry.
