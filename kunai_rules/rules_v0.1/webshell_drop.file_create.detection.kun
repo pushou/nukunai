@@ -1,0 +1,17 @@
+---
+name: webshell_drop.file_create.detection
+type: detection
+meta:
+  tags: ["webshell_drop", "type_detection", "event_file_create", "T1505.003"]
+  attack: [ T1505.003 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [file_create]
+# Script serveur (php/asp/jsp/cgi/py/rb/pl) créé dans un document-root web
+# (T1505.003, sev 9). Valeurs en quotes simples YAML pour préserver les backslashes.
+matches:
+  $docroot: '.data.path ~= "^/var/www(/|$)|^/srv/www(/|$)|^/usr/share/nginx/html(/|$)|^/usr/share/apache2(/|$)|^/opt/[^/]*/(htdocs|www|public_html|webroot)(/|$)"'
+  $script:  '.data.path ~= "\.(php|php5|php7|phtml|asp|aspx|jsp|cgi|py|rb|pl)$"'
+condition: $docroot and $script
+severity: 9

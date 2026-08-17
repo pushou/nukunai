@@ -8,9 +8,11 @@ meta:
 match-on:
   events:
     kunai: [send_data]
+# Exfiltration : envoi de données (volume OU entropie élevée) vers une
+# destination PUBLIQUE (T1041 / T1030).
 matches:
-  $pub:  .data.dst.public == true
-  $big:  .data.data_size > 1000000
-  $hi:   .data.data_entropy > 7.5
+  $pub: '.data.dst.public == true'
+  $big: '.data.data_size > 1000000'
+  $hi:  '.data.data_entropy > 7.5'
 condition: $pub and ($big or $hi)
 severity: 8

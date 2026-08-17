@@ -1,0 +1,6 @@
+[submodule "kunai_rules/vendored/community-rules"]
+	path = kunai_rules/vendored/community-rules
+	url = https://github.com/kunai-project/community-rules
+[submodule "kunai_rules/vendored/kunai-rules"]
+	path = kunai_rules/vendored/kunai-rules
+	url = https://github.com/digisquad-repo/kunai-rules

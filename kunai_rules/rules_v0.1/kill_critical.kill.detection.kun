@@ -1,0 +1,17 @@
+---
+name: kill_critical.kill.detection
+type: detection
+meta:
+  tags: ["kill_critical", "type_detection", "event_kill", "T1489"]
+  attack: [ T1489 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [kill]
+# Cible critique tuée (agent/daemon) OU SIGKILL hors cycle de vie (T1489).
+# Le process cible est exposé sous .data.target.task.name dans kunai.
+matches:
+  $target: '.data.target.task.name ~= "(docker|containerd|sshd|systemd|wazuh|crowdsec|splunk|check_mk|auditd|cron|agent)"'
+  $hard:   '.data.signal == "SIGKILL"'
+condition: $target or $hard
+severity: 8

@@ -9,6 +9,6 @@ match-on:
   events:
     kunai: [execve, execve_script]
 matches:
-  $ob: .data.command_line ~= "(?:base64 -d|base64 -D|xxd -r|openssl enc|perl -e|python3? -c|php -r)"
+  $ob: '.data.command_line ~= "(?:base64 -d|base64 -D|xxd -r|openssl enc|perl -e|python3? -c|php -r)"'
 condition: $ob
 severity: 8

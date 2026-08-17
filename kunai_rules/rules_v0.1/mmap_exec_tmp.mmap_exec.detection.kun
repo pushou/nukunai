@@ -8,7 +8,9 @@ meta:
 match-on:
   events:
     kunai: [mmap_exec]
+# Exécution (mmap exec) depuis une zone temporaire / fd / memfd (T1055.001).
+# Le chemin exposé par kunai est .data.mapped.file (pas .path).
 matches:
-  $m: .data.mapped.path ~= "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/proc/self/fd/|memfd:)"
+  $m: '.data.mapped.file ~= "(?:/tmp/|/var/tmp/|/dev/shm/|/run/shm/|/proc/self/fd/|memfd:)"'
 condition: $m
 severity: 8

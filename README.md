@@ -352,6 +352,45 @@ Options : `--infer-schema <n>` (default 200000), `-n/--num <n>` (lines per
 family, default 20), `-f/--family <fam>`, `-x/--explore`, `--no-json`
 (writes the markdown only).
 
+## Vendored rule repositories (submodules)
+
+Two upstream rule repositories are embedded as git **submodules** so that the
+nukunai engine can be cross-checked against the official kunai rules and their
+phenotypes reused in `kunai_rules.nu` (generic pot commun):
+
+| Submodule | Upstream | Content |
+|-----------|----------|---------|
+| `kunai_rules/vendored/community-rules` | https://github.com/kunai-project/community-rules | Official community rules, gene `.kun` |
+| `kunai_rules/vendored/kunai-rules` | https://github.com/digisquad-repo/kunai-rules | 306 detection/dependency rules `.yaml` (same gene DSL) |
+
+Clone them with their submodules:
+
+```
+git submodule update --init --recursive
+```
+
+They are read-only references for cross-checking. The engine itself stays
+self-contained in `kunai_rules.nu` / `kunai_rules_local.nu` and the local
+`kunai_rules/rules_v0.1/*.detection.kun` pot commun (same gene syntax as the
+upstreames), so the analysis never depends on network access.
+
+### Validating rules with `kunai replay`
+
+If a kunai binary is installed, `kunai replay -r <rule>` can act as a syntax
+validator for the detection rules:
+
+```
+kunai replay -r kunai_rules/rules_v0.1/c2_unusual_port.connect.detection.kun /tmp/events.jsonl
+```
+
+**Known quirk (kunai 0.4.0 gene parser):** a bare integer literal on the RHS
+of `==` (e.g. `.data.dst.port == 31337`) is rejected with
+`expected value or indirect_field_path`, and this is **reproducible on the
+upstream rules** (digisquad `net_c2_port.connect.detection.yaml` fails the
+same way). Our nushell/polars engine is therefore the source of truth for
+analysis and handles integers/ranges/regex cleanly; use `kunai replay` only
+as an auxiliary syntax check, not as the gate.
+
 ## Example: NGSOTI logs
 
 The scripts below use the engine to analyse the kunai logs of the

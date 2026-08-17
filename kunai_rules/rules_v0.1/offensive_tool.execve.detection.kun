@@ -9,6 +9,6 @@ match-on:
   events:
     kunai: [execve]
 matches:
-  $t: .data.command_line ~= "(?:nmap|masscan|hydra|medusa|john|hashcat|mimikatz|msfconsole|meterpreter|procdump|sqlmap|nikto|dirb|gobuster)"
+  $t: '.data.command_line ~= "(?:nmap|masscan|hydra|medusa|john|hashcat|mimikatz|msfconsole|meterpreter|procdump|sqlmap|nikto|dirb|gobuster)"'
 condition: $t
 severity: 8

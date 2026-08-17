@@ -9,6 +9,6 @@ match-on:
   events:
     kunai: [file_create]
 matches:
-  $h: .data.path ~= "^/tmp/\.[^/]+|^/dev/shm/\.[^/]+|^/var/tmp/\.[^/]+"
+  $h: '.data.path ~= "^/tmp/\.[^/]+|^/dev/shm/\.[^/]+|^/var/tmp/\.[^/]+"'
 condition: $h
 severity: 7

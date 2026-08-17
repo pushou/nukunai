@@ -1,0 +1,18 @@
+---
+name: dns_suspicious.dns_query.detection
+type: detection
+meta:
+  tags: ["dns_suspicious", "type_detection", "event_dns_query", "T1568.002", "T1071.004"]
+  attack: [ T1568.002 ]
+  authors: ["nukunai"]
+match-on:
+  events:
+    kunai: [dns_query]
+# TLD suspects (T1568.002) OU requête anormalement longue (>60, tunneling DNS,
+# T1071.004). La longueur est exprimée par une regex (gene n'a pas de len()).
+# Valeurs en quotes simples YAML pour préserver les backslashes.
+matches:
+  $tld:  '.data.query ~= "(?:\.tk$|\.ml$|\.ga$|\.cf$|\.gq$|\.top$|\.xyz$|\.pw$|\.onion$|\.i2p$)"'
+  $long: '.data.query ~= ".{61,}"'
+condition: $tld or $long
+severity: 7
