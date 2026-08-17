@@ -75,6 +75,16 @@ export def starts_with_any [col, prefixes: list<string>] {
     ((polars col $col) | polars contains $re)
 }
 
+# expression polars booléenne : vraie si la colonne chaîne `col` CONTIENT (n'importe
+# où) l'un des préfixes de `prefixes`. Variante non-ancrée de starts_with_any, utile
+# quand le préfixe n'est pas en tête de la valeur (ex. command_line = "ln -rs
+# /var/tmp/mkinitramfs_GHWtJR/..."). Échappe les métacaractères regex comme littéraux.
+export def contains_any [col, prefixes: list<string>] {
+    let escaped = ($prefixes | each {|p| $p | str replace -a -r '([\.\+\*\?\(\)\[\]\{\}\$\^\|\\])' '\$1' })
+    let re = ('(?:' + ($escaped | str join '|') + ')')
+    ((polars col $col) | polars contains $re)
+}
+
 # =====================================================================
 # ---- Base lazy commune (unnests de base) -----------------------------
 # =====================================================================
@@ -251,10 +261,23 @@ export def detect_execve [base] {
     let c_tool  = (r_execve_offensive_tool)
     let c_tmp   = (r_execve_from_tmp)
     let is_build = (is_in_df 'task_name' (local_cfg allowlist_build_procs))
+    # Chaine build INITRAMFS (mkinitramfs/dracut/update-initramfs, provoquée par une
+    # mise à jour noyau/module DKMS) : ré-agencement d'utilitaires dans la zone de
+    # staging /var/tmp/mkinitramfs_* puis exécution de nombreuses tâches (cp, ln,
+    # mkdir, find, depmod, kmod) dont la commande référence ce staging.
+    # Signal basé UNIQUEMENT sur le chemin de staging : /var/tmp/mkinitramfs_* est un
+    # répertoire réservé créé par mkinitramfs (suffixe aléatoire, n'existe que le
+    # temps du build), jamais utilisé par de la persistance malveillante. Même logique
+    # que allowlist_build_paths (/tmp/cargo-*). On évite ainsi d'ajouter des utilitaires
+    # banals (cp/ln/mkdir/find) aux allowlists de procs, ce qui masquerait un usage
+    # offensif depuis /tmp.
+    let is_initramfs = (contains_any 'command_line' (local_cfg allowlist_initramfs_paths))
+    let c_build_ok = ($is_build or $is_initramfs)
     # Véritable "dropper" : exécution depuis /tmp PAR un process qui n'est PAS la
-    # chaîne build (rustup/cargo/cc/rustc…) légitime. L'exécution d'un binaire
-    # "exec_from_tmp" par un utilitaire type bash/sh/langage reste détectée.
-    let c_tmp_real = ($c_tmp and ($is_build | polars expr-not))
+    # chaîne build (rustup/cargo/cc/rustc…) ni initramfs (dracut/kmod/depmod…)
+    # légitime. L'exécution d'un binaire "exec_from_tmp" par un utilitaire type
+    # bash/sh/langage reste détectée.
+    let c_tmp_real = ($c_tmp and ($c_build_ok | polars expr-not))
     if (not (has_events $base 'execve')) { return (empty_like $base) }
 
     $base

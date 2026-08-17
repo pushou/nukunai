@@ -253,13 +253,33 @@ Pièges vérifiés dans les sources gene/kunai :
 Les 13 `.kun` ont été convertis/corrigés depuis les `.yaml` (2026-08-17) ; validation : parse YAML + grammaire
 match gene + compilation regex + cohérence des vars de `condition`.
 
-**PIÈGE kunai 0.4.0 (gene) — entiers nus en RHS de `==` :** `kunai replay -r <regle>` rejette
-parfois un littéral entier (`.data.dst.port == 31337`, `== 4444`, `== 161`, `== 443`) par
-`expected value or indirect_field_path`. Reproductible sur les règles officielles digisquad
-(`net_c2_port.connect.detection.yaml` échoue sur `31337`) : ce n'est DONC pas notre format, c'est
-un quirk du parser gene embarqué. Comportement contextuel (un matcher UNIQUE échoue systématiquement,
-une règle multi-matchers `any of $port_…` passe partiellement). Ne PAS utiliser `kunai replay` comme
-gate de validation : notre moteur nushell/polars reste la vérité pour l'analyse.
+**PIÈGE gene (TOUTES versions testées, y compris 0.6.2) — littéraux numériques nus en RHS NON
+supportés :** le moteur `replay` (gene, `expected value` / `expected value or indirect_field_path`)
+rejette TOUT littéral numérique nu en RHS d'une comparaison — entiers `== 31337`, `> 1000000` ET
+floats `> 7.5` (vérifié sur le binaire local 0.6.2, 2026-08-17). La règle officielle vendored
+`net_c2_port.connect.detection.yaml` (digisquad) échoue IDENTIQUEMENT → ce n'est pas notre
+format, c'est un défaut du gene embarqué dans kunai (0.4.0 ET 0.6.2).
+**FIX VALIDÉ (0.6.2) : QUOTER le littéral numérique** `== '31337'`, `> '1000000'`, `> '7.5'`.
+Gene parse alors un atome numérique et compare numériquement (un port u16 `31337` matche
+`'31337'` ; zéro faux positif sur 443/8080/53/22). Corrections appliquées (2026-08-17) :
+`c2_unusual_port.connect.detection.kun` (N ports quotés) et `exfil_public_send.send_data.detection.kun`
+(`$big > '1000000'`, `$hi > '7.5'`). Les 13 `.kun` chargent sans erreur dans un replay commun.
+
+**PIÈGE replay synthétique — `event.id` DOIT être l'id numérique réel du `enum Type` :**
+le gate `match-on.events.kunai` de gene compare à l'id numérique de l'événement, PAS au nom.
+Un `connect` synthétique avec `info.event.id = 8` (id de Kill) fait ÉCHOUE silencieusement
+TOUTE règle connect (`condition` jamais vraie), même une règle `== 'connect'` toujours-true.
+Il faut utiliser l'id réel du `enum Type` kunai (bpf_events.rs) : `Connect = 60`. Un événement
+valide `connect` : `info.event.id = 60`, `info.event.name = "connect"`, schéma TaskSection
+(`user`/`group`/`flags` hex). (Vérifié 2026-08-17 : avec `id=60` la règle mini `== '31337'` et la
+règle complète `c2_unusual_port` détectent ; `id=8` aucune détection.)
+**Action :** pour valider une règle `.kun`, utiliser `kunai replay` 0.6.2 + événements synthétiques
+avec les bons ids ; notre moteur nushell/polars reste la vérité pour l'analyse réelle.
+
+**Ids numériques du `enum Type` kunai (bpf_events.rs, discriminants réels pour `event.id` des
+événements synthétiques) :** execve=1, execve_script=2, prctl=7, kill=8, ptrace=9, mmap_exec=41,
+connect=60, dns_query=61, send_data=62, file_create=88, read=81. (InitModule=20, MprotectExec=40,
+Read=81 sont des resets explicites : les variantes qui suivent incrémentent de 1.)
 
 ---
 

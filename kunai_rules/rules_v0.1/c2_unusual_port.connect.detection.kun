@@ -9,33 +9,40 @@ match-on:
   events:
     kunai: [connect]
 # Ports C2/backdoor/Tor/mining et protocoles réseaux inhabituels pour une
-# destination publique (T1095 / T1496). Exprimé en opérateurs == car le DSL
-# gene ne supporte ni `in [...]` ni littéral de liste.
+# destination publique (T1095 / T1496).
+#
+# Syntaxe gene : le DSL gene ne supporte ni `in [...]`, ni littéral de liste,
+# NI littéral entier nu (la grammaire match.pest de `value` n'accepte que
+# chaînes quotes, "none"/"some"/"true"/"false"). Un entier nu en RHS de `==`
+# → "expected value or indirect_field_path" (même sur la règle OFFICIELLE
+# digisquad net_c2_port, en kunai 0.4.0 COMME 0.6.2).
+# La forme CORRECTE est la chaîne QUOTEE : gene fait Number::from_str('445')
+# → MatchValue::StringOrNumber(…), et compare alors numériquement le champ.
 matches:
-  $p4444:  .data.dst.port == 4444
-  $p4445:  .data.dst.port == 4445
-  $p6667:  .data.dst.port == 6667
-  $p31337: .data.dst.port == 31337
-  $p9001:  .data.dst.port == 9001
-  $p8888:  .data.dst.port == 8888
-  $p8443:  .data.dst.port == 8443
-  $p1337:  .data.dst.port == 1337
-  $p2222:  .data.dst.port == 2222
-  $p161:   .data.dst.port == 161
-  $p137:   .data.dst.port == 137
-  $p445:   .data.dst.port == 445
-  $p9999:  .data.dst.port == 9999
-  $p49152: .data.dst.port == 49152
-  $p9050:  .data.dst.port == 9050
-  $p9051:  .data.dst.port == 9051
-  $p9150:  .data.dst.port == 9150
-  $p5555:  .data.dst.port == 5555
-  $p7777:  .data.dst.port == 7777
-  $p14444: .data.dst.port == 14444
-  $p14433: .data.dst.port == 14433
-  $p45700: .data.dst.port == 45700
-  $p3256:  .data.dst.port == 3256
-  $p20535: .data.dst.port == 20535
-  $p3333:  .data.dst.port == 3333
-condition: $p4444 or $p4445 or $p6667 or $p31337 or $p9001 or $p8888 or $p8443 or $p1337 or $p2222 or $p161 or $p137 or $p445 or $p9999 or $p49152 or $p9050 or $p9051 or $p9150 or $p5555 or $p7777 or $p14444 or $p14433 or $p45700 or $p3256 or $p20535 or $p3333
+  $p4444:  .data.dst.port == '4444'
+  $p4445:  .data.dst.port == '4445'
+  $p6667:  .data.dst.port == '6667'
+  $p31337: .data.dst.port == '31337'
+  $p9001:  .data.dst.port == '9001'
+  $p8888:  .data.dst.port == '8888'
+  $p8443:  .data.dst.port == '8443'
+  $p1337:  .data.dst.port == '1337'
+  $p2222:  .data.dst.port == '2222'
+  $p161:   .data.dst.port == '161'
+  $p137:   .data.dst.port == '137'
+  $p445:   .data.dst.port == '445'
+  $p9999:  .data.dst.port == '9999'
+  $p49152: .data.dst.port == '49152'
+  $p9050:  .data.dst.port == '9050'
+  $p9051:  .data.dst.port == '9051'
+  $p9150:  .data.dst.port == '9150'
+  $p5555:  .data.dst.port == '5555'
+  $p7777:  .data.dst.port == '7777'
+  $p14444: .data.dst.port == '14444'
+  $p14433: .data.dst.port == '14433'
+  $p45700: .data.dst.port == '45700'
+  $p3256:  .data.dst.port == '3256'
+  $p20535: .data.dst.port == '20535'
+  $p3333:  .data.dst.port == '3333'
+condition: any of $p
 severity: 8

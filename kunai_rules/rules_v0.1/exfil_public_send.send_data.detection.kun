@@ -12,7 +12,7 @@ match-on:
 # destination PUBLIQUE (T1041 / T1030).
 matches:
   $pub: '.data.dst.public == true'
-  $big: '.data.data_size > 1000000'
-  $hi:  '.data.data_entropy > 7.5'
+  $big: ".data.data_size > '1000000'"
+  $hi:  ".data.data_entropy > '7.5'"
 condition: $pub and ($big or $hi)
 severity: 8
