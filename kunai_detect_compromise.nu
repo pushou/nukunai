@@ -90,6 +90,27 @@ export def contains_any [col, prefixes: list<string>] {
     ((polars col $col) | polars contains $re)
 }
 
+# expression polars booléenne : vraie (== le champ dst_ip désigne une adresse
+# PRIVÉE / de bouclage / link-local IPv4, en forme brute OU IPv4-mappée `::ffff:`).
+# CORRECTIF GÉNÉRIQUE d'un bug kunai : kunai rend `dst_public=true` pour les
+# adresses IPv4-mappées `::ffff:` même quand ce sont des RFC1918 (réseau docker
+# interne 10./172.16-31./192.168., bouclage 127., link-local 169.254.). Une telle
+# destination n'est JAMAIS de l'egress public : c'est du trafic hôte/docker interne.
+# On ne peut donc PAS se fier à la colonne source `dst_public` seule pour qualifier
+# une exfiltration : un RFC1918 mappé n'est jamais un C2 externe.
+export def is_private_dst [] {
+    # RFC1918 : 10/8, 172.16/12, 192.168/16 ; bouclage 127/8 ; link-local 169.254/16.
+    # Chaque plage figure en forme brute ET en forme IPv4-mappée `::ffff:` (le format
+    # exact que kunai rend dans dst_ip pour du trafic docker/hôte).
+    let raw = (
+        ['127.', '10.', '169.254.', '192.168.']
+        | append (16..31 | each {|b| $'172.($b).'})
+    )
+    let mapped = ($raw | each {|p| $'::ffff:($p)' })
+    let priv = ($raw | append $mapped)
+    (starts_with_any 'dst_ip' $priv)
+}
+
 # =====================================================================
 # ---- Base lazy commune (unnests de base) -----------------------------
 # =====================================================================
@@ -405,7 +426,12 @@ export def detect_connect [base] {
     # Ports C2/backdoor/Tor/mining et protocoles nets inhabituels pour une
     # destination publique — pot commun r_connect_unusual_port (cf. le fichier
     # de règle c2_unusual_port.connect.detection.yaml dans kunai_rules/rules_v0.1/).
-    let c_public = (r_connect_public_egress)
+    let c_lbl_public = (r_connect_public_egress)
+    # CORRECTIF GÉNÉRIQUE du bug kunai : `dst_public` est mal rendu=true pour les
+    # RFC1918 IPv4-mappées `::ffff:` (trafic docker/hôte interne). Une destination
+    # privée/bouclage n'est jamais de l'egress public -> on la retire de c_public.
+    let c_private    = (is_private_dst)
+    let c_public     = (($c_lbl_public) and (($c_private) | polars expr-not))
     let c_port   = (r_connect_unusual_port)
     # allowlist réseau EGRESS : destination publique réputée (CDN/miroir/dépôt) ET
     # processus légitime de téléchargement. => bénin, on n'alerte pas.
@@ -444,7 +470,12 @@ export def detect_connect [base] {
 # ---- FAMILLE send_data : exfiltration --------------------------------
 # =====================================================================
 export def detect_send_data [base] {
-    let c_public = (r_connect_public_egress)
+    let c_lbl_public = (r_connect_public_egress)
+    # CORRECTIF GÉNÉRIQUE du bug kunai : `dst_public` est mal rendu=true pour les
+    # RFC1918 IPv4-mappées `::ffff:` (trafic docker/hôte interne). Une destination
+    # privée/bouclage n'est jamais de l'egress public -> on la retire de c_public.
+    let c_private    = (is_private_dst)
+    let c_public     = (($c_lbl_public) and (($c_private) | polars expr-not))
     let c_big    = (r_senddata_large)
     let c_hi     = (r_senddata_high_entropy)
     # Exfiltration = envoi de données vers une destination PUBLIQUE (C2/exfil).

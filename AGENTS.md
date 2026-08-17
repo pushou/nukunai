@@ -92,6 +92,10 @@ ngsoti_detail.nu / ngsoti_all.nu / ngsoti_report.nu   wrappers sur le dataset ng
 - **signal / option (kill, prctl)** sont des STRINGS : `== 'SIGKILL'`, `== 'PR_SET_DUMPABLE'`.
 - **Colonnes Int128** non convertibles en nu → ne sélectionner que des colonnes sûres avant
   `collect` (helpers `has_events`/`cols_keep`/`empty_like`).
+- **`dst_public` est FIABLE SEULEMENT si ce n'est pas une plage privée/mappée** : kunai rend
+  `dst_public=true` pour les RFC1918 IPv4-mappées du docker interne (`::ffff:10.`, `::ffff:172.16-31.`,
+  `::ffff:192.168.`, `::ffff:127.`). Ne jamais qualifier un egress avec `dst_public` seul → appliquer
+  `c_public = (dst_public==true) and (not is_private_dst)` (helper générique du moteur, §23 MEMORIES).
 - **Formats kunai variables** : colonnes absentes selon événements → utiliser `unnestif`,
   `cols_keep`, `normalize_mapped` (ne PAS faire un `polars unnest`/`select` sur une colonne absente).
 - `starts_with_any` échappe les préfixes en regex ancrée `^(p1|p2|…)` (match de plage CIDR / chemin).

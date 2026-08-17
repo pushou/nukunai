@@ -428,3 +428,35 @@ annulerait le filtre. Correctif générique sain pour toutes les familles.
 Validé : profil `elastic` (egress_paths=3, dns_queries=3, dns_ips=10.6.255.106+127.0.0.11+
 127.0.0.1, pubnet_len=52) et fallback `default` (egress_paths vide, pubnet_len=32). Le moteur
 s'exécute sans erreur sur ngsoti avec `--profile elastic` (listes non vides) et en défaut.
+
+## 23. Bug kunai `dst_public` sur RFC1918 IPv4-mappées — correctif GÉNÉRIQUE (2026-08-17)
+
+**Constat** : sur un registre tpot (`kunai_tpot/events.log.3923.gz`), le bruit n'était PAS réglé
+par le profil `elastic` seul (connect 386→384, send_data 24311→24307) : il subsistait car la
+cause racine était ailleurs que dans les `command_line` ELK.
+
+**Diagnostic** : kunai rend `dst_public=true` pour des adresses **IPv4-mappées `::ffff:` privées
+RFC1918** du réseau docker interne (`::ffff:10.6.255.134`, `::ffff:172.19.0.8`, `::ffff:127.0.0.1`).
+La colonne source `dst_public` est donc **erronée** pour ces plages : le trafic hôte/docker
+interne (logstash `[http_output]>w` vers logstash/ES, elasticsearch `elastic..][T#N]` entre nœuds)
+est qualifié à tort de `public_egress`.
+
+**Correctif GÉNÉRIQUE (dans le moteur, pas dans le local)** : nouveau helper
+`is_private_dst` (`kunai_detect_compromise.nu`) qui renvoie `true` quand `dst_ip` (brute OU
+`::ffff:`) commence par une plage privée : RFC1918 `10.`, `172.16.–172.31.`, `192.168.`, bouclage
+`127.`, link-local `169.254.`. Dans `detect_connect` et `detect_send_data` :
+`c_public = (dst_public == true) AND (NOT is_private_dst)`. Un RFC1918 mappé n'est JAMAIS un
+C2 externe → ce n'est pas de l'egress public.
+
+**Résultat sur le registre tpot (profil elastic)** :
+- connect 384 → **0** (tout `::ffff:10.6.255.134` interne).
+- send_data 24307 → **54** : restent UNIQUEMENT les destinations réellement PUBLIQUES
+  (`51.89.235.201` OVH ×51, `16.176.125.169` CloudFront ×2, `52.180.136.250` Azure ×1) = le vrai
+  signal d'exfiltration à investiguer. Aucun RFC1918 survivant.
+- Non-régression : ngsoti `15e67237…` identique avant/après (connect 18, send_data 9280, tous
+  publics, 0 RFC1918 résiduel), en défaut ET avec `--profile elastic`.
+
+**À retenir** : ne JAMAIS se fier à la colonne `dst_public` seule pour qualifier un egress
+public ; filtrer d'abord les plages privées/mappées (correction générique, pas une allowlist
+locale). Cela ne masque aucune compromission : le trafic privé/docker n'est pas une exfiltration
+externe, et les destinations publiques réelles restent signalées.
