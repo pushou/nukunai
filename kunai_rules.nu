@@ -125,6 +125,17 @@ export def r_ev_dns_suspicious_tld [] { "suspicious_tld" }
 export def r_dns_long_query [] { (((polars col query) | polars str-lengths) > 60) }
 export def r_ev_dns_long_query [] { "suspicious_length" }
 
+# Reverse-DNS (PTR) : requête `*.in-addr.arpa` (IPv4) / `*.ip6.arpa` (IPv6), à forme
+# IP->hostname utilisée par les outils d'administration (iptables -L, traceroute,
+# whois…). Ce n'est JAMAIS du tunneling : il n'y a pas de donnée exfiltrée dans une
+# requête inverse, et le type de requête est un critère de FLUX (forme du FQDN),
+# pas d'identité de processus. Une telle requête ne doit déclencher AUCUNE évidence
+# dns_query (ni non_standard_dns_server, ni length, ni tld).
+export def r_dns_reverse [] {
+    (polars col query) | polars contains "(?:\\.in-addr\\.arpa$|\\.ip6\\.arpa$)"
+}
+export def r_ev_dns_reverse [] { "dns_reverse" }
+
 # =====================================================================
 # kill — perturbation / évasion
 # =====================================================================

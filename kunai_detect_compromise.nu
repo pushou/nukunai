@@ -604,9 +604,11 @@ export def detect_dns_query [base] {
     let c_nondns = ((((polars col dns_server_ip) | polars is-in (local_cfg dns_ips | polars into-df)) | polars expr-not))
     # Requêtes DNS bénignes (contexte LOCAL, profil) : noms de service internes résolus
     # par Kibana/libuv (elasticsearch, epr.elastic.co…) via le résolveur Docker 127.0.0.11.
-    # Une requête bénigne ne doit déclencher AUCUNE évidence dns_query (ni length, ni
-    # non_standard_dns_server, ni tld) — on neutralise les 3 signaux quand elle matche.
-    let c_benign = (contains_any 'query' (local_cfg allowlist_dns_queries))
+    # Reverse-DNS (PTR) `*.in-addr.arpa`/`*.ip6.arpa` : forme IP->hostname des outils
+    # d'administration (iptables -L, traceroute…), jamais du tunneling (r_dns_reverse).
+    # Une requête bénigne/inverse ne doit déclencher AUCUNE évidence dns_query (ni
+    # length, ni non_standard_dns_server, ni tld) — on neutralise les 3 signaux.
+    let c_benign = ((contains_any 'query' (local_cfg allowlist_dns_queries)) or (r_dns_reverse))
     let c_tld_s    = (($c_tld)    and (($c_benign) | polars expr-not))
     let c_long_s   = (($c_long)   and (($c_benign) | polars expr-not))
     let c_nondns_s = (($c_nondns) and (($c_benign) | polars expr-not))
@@ -946,7 +948,19 @@ export def write_report [base, file: string, ts?: string, --no-json] {
     if $json {
         let out_json = ($out_dir | path join $"($base_name).json")
         (report_json $file $ts $rep) | to json | save --force $out_json
-        { md: $out_md, json: $out_json, fam_counts: $rep.fam_counts }
+        # Sauvegarde PARQUET : une détection (non vide) par famille, directement
+        # exploitable par nushell (`polars open <fichier>.parquet | polars into-nu`).
+        # Chaque dataframe est déjà matérialisé en liste nu (rep.data) ; on le
+        # resérialise en parquet via polars. Une famille vide n'écrit rien.
+        let parquets = ($rep.data
+            | items {|fam, rows| if ($rows | length) > 0 { { fam: $fam, rows: $rows } } else { null } }
+            | where {|it| $it != null }
+            | each {|it|
+                let out_pq = ($out_dir | path join $"detections_($it.fam).parquet")
+                do { $it.rows | polars into-df | polars into-lazy | polars save $out_pq }
+                $out_pq
+            })
+        { md: $out_md, json: $out_json, parquets: $parquets, fam_counts: $rep.fam_counts }
     } else {
         { md: $out_md, fam_counts: $rep.fam_counts }
     }
@@ -1085,7 +1099,8 @@ def main [
         if $no_json {
             print $"(ansi cyan)Rapport écrit : ($wrote.md)(ansi reset)"
         } else {
-            print $"(ansi cyan)Rapport écrit : ($wrote.md)\nJSON : ($wrote.json)(ansi reset)"
+            let pq = ($wrote.parquets | str join "\n")
+            print $"(ansi cyan)Rapport écrit : ($wrote.md)\nJSON : ($wrote.json)\nParquet :\n($pq)(ansi reset)"
         }
     }
 }

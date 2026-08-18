@@ -133,7 +133,11 @@ def default_defs [] {
         # comme `non_standard_dns_server`/`suspicious_*`. Vide par défaut => à remplir
         # dans les profils (ex. epr.elastic.co, infra-cdn.elastic.co, nom de service
         # K8s/docker "elasticsearch" résolu par libuv).
-        allowlist_dns_queries: [],
+        # `pool.ntp.org` = résolution du pool NTP système (chronyd/ntpd) : synchro
+        # horaire bénigne (même logique que le port 123 à l'egress) — le résolveur
+        # local peut varier (10.0.2.3 QEMU/VBox, 10.6.x, loopback Docker), donc on
+        # neutralise par la FORME de la requête, pas par l'IP du résolveur.
+        allowlist_dns_queries: ['pool.ntp.org'],
         # chaîne build Rust (client lourd ~/.cargo, ~/.rustup) : exécution depuis
         # /tmp/cargo-*, /tmp/rustc* ou ~/.cargo est BÉNIGNE.
         allowlist_build_procs: ['rustup','rustup-init','cargo','rustc','rustdoc',
