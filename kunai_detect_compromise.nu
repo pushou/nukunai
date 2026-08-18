@@ -26,9 +26,13 @@
 # des règles génériques vit dans kunai_rules.nu. Le moteur consomme ici
 # les deux modules et compose générique + local.
 # =====================================================================
-use /home/pouchou/Nextcloud/dev/dev_nushell/nukunai/kunai_rules_local.nu local_cfg
+# Les deux `use` ci-dessous résolvent leurs chemins RELATIFS au répertoire de ce
+# fichier (pas au cwd de lancement) : le dépôt est donc portable, quel que soit où
+# il est cloné. NB : nushell exige un chemin CONSTANT à la parse (pas `use $var`),
+# c'est pourquoi on n'utilise pas de variable ici pour le répertoire des règles.
+use ./kunai_rules_local.nu local_cfg
 # pot commun exécutable : règles génériques (sans contexte machine)
-use /home/pouchou/Nextcloud/dev/dev_nushell/nukunai/kunai_rules.nu *
+use ./kunai_rules.nu *
 
 
 # expression polars booléenne : vraie si la tâche (task_name) est dans la liste
