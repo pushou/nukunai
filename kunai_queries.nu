@@ -23,6 +23,7 @@
 #   connect-ips      top dst_ip des connexions             (filter_connect)
 #   connect-ports    top dst_port des connexions
 #   network          vue réseau : command_line + dst (flatten)
+#   dst-ports        ports + ancestors uniques groupés par IP de destination (dst nested ou aplati)
 #   file-extensions  extensions des chemins créés          (filter_write)
 #   kill-targets     cibles tuées (kill)                   (filter_kill)
 #   prctl-options    options prctl par processus
@@ -173,7 +174,7 @@ def render_top [df, top: int, valuecol: string] {
 const EVENT_QUERY = {
     execve:        'command-lines / exes'
     execve_script: 'command-lines / exes'
-    connect:       'connect-ips / connect-ports / network'
+    connect:       'connect-ips / connect-ports / network / dst-ports'
     send_data:     'send-ips / send-ports'
     dns_query:     'dns'
     file_create:   'file-extensions'
@@ -343,6 +344,58 @@ def "main connect-ports" [
         | polars collect
         | polars into-nu)
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucune connexion dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
+}
+
+# Ports par IP de destination : groupes les adresses dst et agrège leurs ports uniques.
+# Accepte un parquet avec `dst` NESTÉ (format source non aplati, ex. eventsreg.log.parquet)
+# comme un parquet déjà aplati (`dst_ip` / `dst_port` au niveau racine). La forme NESTÉE
+# reproduit le pipeline polars voulu :
+#   polars get dst | drop-nulls | unnest dst | select ip port | collect
+#   | group-by ip | agg (unique port) | collect
+def "main dst-ports" [
+    file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --top: int = 20       # nombre de lignes à afficher
+    --all (-a)            # tout afficher (au lieu des --top premières)
+    --infer-schema: int = 200000
+] {
+    if not (require_file $file) { return }
+    let base = (open_source $file $infer_schema)
+    let cols = ($base | polars schema | columns)
+    if 'dst' in $cols {
+        # format source avec `dst` imbriqué : unnest -> ip / port, puis group-by ip.
+        # `ancestors` (chaîne pipe-séparée) est agrégé en uniques comme le port.
+        let all_rows = ($base
+            | polars select dst ancestors
+            | polars drop-nulls
+            | polars unnest dst
+            | polars select ip port ancestors
+            | polars collect
+            | polars group-by (polars col ip)
+            | polars agg [(polars col port | polars unique) (polars col ancestors | polars unique)]
+            | polars sort-by ip
+            | polars collect
+            | polars into-nu)
+        if (($all_rows | length) == 0) {
+            print $"(ansi yellow)✗ aucune ip de destination dans ce fichier(ansi reset)"
+        } else if $all { $all_rows } else { $all_rows | first $top }
+    } else if 'dst_ip' in $cols {
+        # parquet déjà aplati flat=flat : dst_ip / dst_port au niveau racine,
+        # `ancestors` (chaîne pipe-séparée) reste une colonne racine.
+        let all_rows = ($base
+            | polars select dst_ip dst_port ancestors
+            | polars drop-nulls
+            | polars collect
+            | polars group-by (polars col dst_ip | polars as ip)
+            | polars agg [(polars col dst_port | polars unique | polars as port) (polars col ancestors | polars unique)]
+            | polars sort-by ip
+            | polars collect
+            | polars into-nu)
+        if (($all_rows | length) == 0) {
+            print $"(ansi yellow)✗ aucune ip de destination dans ce fichier(ansi reset)"
+        } else if $all { $all_rows } else { $all_rows | first $top }
+    } else {
+        print $"(ansi red)✗ ni colonne `dst` imbriquée ni `dst_ip`/`dst_port` dans ce fichier(ansi reset)"
+    }
 }
 
 # Vue réseau : command_line + dst (connect), éventuellement filtrée sur command_line.
@@ -636,6 +689,7 @@ const REQUESTS = {
     'connect-ips':     { desc: 'top dst_ip des connexions',             arg: '--top/--all' }
     'connect-ports':   { desc: 'top dst_port des connexions',           arg: '--top/--all' }
     network:           { desc: 'vue réseau command_line + dst connect', arg: '--filter' }
+    'dst-ports':       { desc: 'ports + ancestors uniques groupés par IP de destination', arg: '--top/--all' }
     'file-extensions': { desc: 'extensions des fichiers créés',         arg: '--top/--all' }
     'kill-targets':    { desc: 'cibles tuées (kill)',                   arg: '--top/--all' }
     'prctl-options':   { desc: 'options prctl par processus',           arg: '--top/--all' }
@@ -676,7 +730,7 @@ def "main help" [] {
 #  - un chemin de fichier passé seul -> requête par défaut `events`,
 #  - sinon -> requête inconnue.
 def main [
-    query: string        # type de requête : events | dns | command-lines | exes | connect-ips | connect-ports | network | file-extensions | kill-targets | prctl-options | file-renames | file-unlinks | mmap-execs | bpf-progs | send-ports | send-ips | help
+    query: string        # type de requête : events | dns | command-lines | exes | connect-ips | connect-ports | network | dst-ports | file-extensions | kill-targets | prctl-options | file-renames | file-unlinks | mmap-execs | bpf-progs | send-ports | send-ips | help
 ] {
     if $query == '-h' or $query == '--help' {
         print_help
