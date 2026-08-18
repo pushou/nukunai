@@ -398,7 +398,8 @@ def "main dst-ports" [
     }
 }
 
-# Vue réseau : command_line + dst (connect), éventuellement filtrée sur command_line.
+# Vue réseau : command_line + dst (connect), groupée par command_line
+# (uniques des dst_ip / dst_port / dst_hostname / dst_public), filtrable sur command_line.
 def "main network" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
     --filter: string = ''  # regex sur command_line
@@ -413,11 +414,18 @@ def "main network" [
         print $"(ansi yellow)✗ aucune colonne d'affichage disponible(ansi reset)"
         return
     }
-    let rows = ($base
+    # les colonnes à agréger en uniques = toutes sauf la clé command_line
+    let dstcols = ($keep | where {|c| $c != 'command_line' })
+    let aggs = ($dstcols | each {|c| (polars col $c | polars unique) })
+    let all_rows = ($base
         | cols_keep $keep
         | polars collect
+        | polars group-by (polars col command_line)
+        | polars agg $aggs
+        | polars sort-by command_line
+        | polars collect
         | polars into-nu)
-    if ($filter | is-empty) { $rows } else if 'command_line' in $cols { $rows | where {|r| $r.command_line =~ $filter} } else { print $"(ansi yellow)✗ colonne command_line absente, --filter ignoré(ansi reset)"; $rows }
+    if ($filter | is-empty) { $all_rows } else { $all_rows | where {|r| $r.command_line =~ $filter} }
 }
 
 # Extensions des chemins créés (file_create / filter_write).
