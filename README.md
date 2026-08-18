@@ -8,15 +8,22 @@ Nushell and its blazzing fast polars plugins, kunai logs (install kunai (https:/
 (it offers satisfactory performance with 100MB Kunai log files) 
 
 
-## transform kunai jsonl files log file to parquet file 
+## transform kunai jsonl files log file to parquet file
 ```
 nu kunai_to_parquet.nu events.log.1408.gz
-╭────┬──────────────────────────────────────────────────────────────────────────────────────────────╮
-│ 39 │ unzipped file  from events.log.1408.gz to events.log.1408                                    │
-│    │ converting  events.log.1408 to events.log.1408.parquet --eager infer-schema=200000 flat=flat │
-╰────┴──────────────────────────────────────────────────────────────────────────────────────────────
+converting  events.log.1408.gz to events.log.1408.parquet --lazy infer-schema=200000 flat=flat
+parquet saved: events.log.1408.parquet
+
 ls |get name|each {nu kunai_to_parquet.nu $in}
 ```
+
+Options : `--infer-schema N` (rows for schema inference, default 200000),
+`--eager` (6x faster but RAM-hungry — **lazy is the default**), `--noflat`
+(keep `data`/`info` nested instead of flattening them), `--output FILE`
+(exact output name). A `.gz` and its uncompressed `.jsonl` converge to the
+**same** `.parquet` (`events.log.1408.gz` → `events.log.1408.parquet`); the
+source is never deleted — in `--eager` mode the `.gz` is first unzipped to a
+temporary file, converted, then the temp is removed.
 
 ## explore dataset interactively
 ```
@@ -280,6 +287,11 @@ peut être omis (message d'erreur gracieux via `require_file`).
 | `network`        | vue réseau command_line + dst connect (`--filter`)      |
 | `file-extensions`| extensions des fichiers créés                           |
 | `kill-targets`   | cibles tuées (kill)                                     |
+| `prctl-options`  | options prctl groupées (task, option)                    |
+| `file-renames`   | renommages de fichiers (old → new)                        |
+| `file-unlinks`   | chemins les plus supprimés (file_unlink)                  |
+| `mmap-execs`     | fichiers mappés RX (`-s` filtre drop-and-run tmp/fd/memfd)|
+| `bpf-progs`      | programmes BPF par type + nom + process                   |
 | `send-ports`     | top ports du send_data                                  |
 | `send-ips`       | top IPs du send_data                                    |
 
@@ -357,15 +369,19 @@ typical sample). A `.parquet` input is read directly, since its `data`/`info`
 fields are already flattened. The script exposes reusable procedures used by
 the example scripts below.
 
-### The 9 detection families
+### The 10 detection families
 
 `execve`, `file_create`, `connect`, `send_data`, `dns_query`, `kill`,
-`bpf_prog_load`, `mmap_exec`, `prctl`.
+`bpf_prog_load`, `mmap_exec`, `prctl`, `ioc` (MISP).
 
 Each line is classified as **benign** (legitimate platform noise: agents,
-standard utilities, local IPs) or **suspicious** based on the task and the
-process chain. Hijackable utilities (`docker`, `chmod`, `curl`, `bash`…) are
-only benign when they come from a legitimate chain.
+standard utilities, local IPs) or **suspicious**. The process-side families
+(`execve`, `file_create`, `kill`, `bpf_prog_load`, `mmap_exec`, `prctl`) are
+judged by the **process chain**: hijackable utilities (`docker`, `chmod`,
+`curl`, `bash`…) are only benign when they come from a legitimate chain. The
+network families (`connect`/`send_data`/`dns_query`) are judged by **flux** —
+destination IP reputation + port reputation, with the correlated DNS FQDN
+kept as report context — never by the process that opened the connection.
 
 ### Engine usage
 
@@ -390,8 +406,13 @@ nu kunai_detect_compromise.nu --explore
 ```
 
 Options : `--infer-schema <n>` (default 200000), `-n/--num <n>` (lines per
-family, default 20), `-f/--family <fam>`, `-x/--explore`, `--no-json`
-(writes the markdown only).
+family, default 20), `-f/--family <fam>` (all or one family), `-x/--explore`,
+`--no-json` (writes the markdown only), `--no-convert` (no automatic
+gz/jsonl→parquet caching), `--force-convert` (rebuild the parquet cache),
+`--cache-dir <dir>` (parquet cache location), `-p/--profile <fcts>` (active
+local allowlist functions, e.g. `dns,network`), `-N/--no-noise` (drop benign
+system noise from the report), `-I/--ioc <file>` (MISP JSONL feed for the
+`ioc` family, default `misp.iocs`).
 
 ## Vendored rule repositories (submodules)
 
@@ -412,11 +433,13 @@ git submodule update --init --recursive
 
 They are read-only references for cross-checking. The engine itself stays
 self-contained in `kunai_rules.nu` (generic pot commun), `kunai_rules_local.nu`
-(thin interface) + `kunai_local_cfg.nu` (per-machine local context, socle `default`
-+ `profiles`) and the local `kunai_rules/rules_v0.1/*.detection.kun` pot commun
+(thin interface) + `kunai_local_cfg.nu` (local context: strict `default` base +
+**function** profiles `dns`/`network`/`docker`/`elk`/`kube`) and the local
+`kunai_rules/rules_v0.1/*.detection.kun` pot commun
 (same gene syntax as the upstreames), so the analysis never depends on network
-access. Use `--profile <name>` (or `-p`) on the engine to select a local profile
-(e.g. `-p elastic` for an ELK/tpot host); it defaults to the machine hostname.
+access. `-p/--profile <fcts>` on the engine selects the active allowlist
+functions (e.g. `-p dns,network`); resolution order is explicit flag >
+`$env.KUNAI_PROFILE` > `all` (every function, the default).
 
 ### Validating rules with `kunai replay`
 
@@ -470,6 +493,7 @@ scanresult20260816_000812/15e67237_execve1_connect35_send_data9286_dns_query2_pr
 ```json
 {
   "schema_version": 1,
+  "generated_at": "2026-08-18T10:24:31+0200",
   "scan_ts": "20260816_000812",
   "sample": { "file": "logs/ngsoti/<hash>/kunai.jsonl.gz", "hash": "<sha256>", "short_hash": "15e67237" },
   "fam_counts": { "execve": 1, "connect": 35, "send_data": 9286, "dns_query": 2, "prctl": 3 },

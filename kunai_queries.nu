@@ -387,10 +387,11 @@ def "main file-extensions" [
         | polars get path
         | polars collect
         | polars into-nu
-        | each {|r| $r.path | path parse | get extension | default '(sans ext)' }
-        | uniq -c
-        | sort-by count -r
-        | rename count extension)
+        | each {|r| $r.path | path parse | get extension | str trim | if ($in == '') { '(sans ext)' } else { $in } }
+        | group-by { $in }
+        | transpose key extension
+        | each {|r| { extension: $r.key, count: ($r.extension | length) } }
+        | sort-by count -r)
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun file_create dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
 }
 
