@@ -505,17 +505,26 @@ export def detect_file_create [base] {
     # de nouveaux FP, uniquement un risque de FN si un artefact tmp déposé
     # est exécuté sans caption par mmap_exec ni execve.
     let exec_paths = (do {
-        let mmap = ($base
-            | polars filter ((polars col event_info_name) == 'mmap_exec')
-            | polars unnest mapped -s "_"
-            | polars filter ((polars col mapped_path) | polars is-not-null)
-            | polars select [(polars col mapped_path)]
-            | polars unique | polars collect | polars into-nu | get mapped_path)
+        # Le frame base peut ne contenir aucune colonne `mapped` (parquet aplati à
+        # partir d'une source sans événement mmap_exec). Le filtre sur mapped_path ne
+        # doit alors pas s'exécuter, sinon la résolution du plan échoue ("not found").
+        let mapped_col = (($base | polars filter ((polars col event_info_name) == 'mmap_exec')
+            | (unnestif $in mapped) | (normalize_mapped $in)
+            | polars schema | columns) | where {|c| $c == 'mapped_path'} | length) > 0
+        let mmap = (if $mapped_col {
+            ($base
+                | polars filter ((polars col event_info_name) == 'mmap_exec')
+                | (unnestif $in mapped)
+                | (normalize_mapped $in)
+                | polars filter ((polars col mapped_path) | polars is-not-null)
+                | (cols_keep [mapped_path])
+                | polars unique | polars collect | polars into-nu | get mapped_path)
+        } else { [] })
         let cfgs = ($base
             | polars filter ((polars col event_info_name) == 'execve')
-            | polars unnest exe -s "_"
+            | (unnestif $in exe)
             | polars filter ((polars col command_line) | polars is-not-null)
-            | polars select [(polars col command_line)]
+            | (cols_keep [command_line])
             | polars collect | polars into-nu | get command_line)
         let tmp = ($cfgs
             | each {|x|
