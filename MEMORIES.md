@@ -319,6 +319,9 @@ Telnet port 23).
   `systemd-timesyn*` (port 123, pool Debian NTP, paquets 48 o) était signalé en
   `public_egress` (connect/send_data/dns 5+3+2 → 0 après fix). Ajoutés à `legit_agents` →
   filtrés par `not_legit` ; les règles egress génériques restent intactes.
+  > **SUPERSEDÉ (2026-08-18, refactor flux)** : plus ajout à `legit_agents` pour l'egress.
+  > La synchro NTP est désormais tue par le CRITÈRE DE FLUX port 123 seul (« port NTP réputé »,
+  > indépendant de l'IP, qui passe — cf. détection DNS 8.8.8.8 gardée). Voir §25.
 - **Initramfs — commit `ec0b66e`** : la génération d'initramfs (mkinitramfs/dracut/
   update-initramfs, `/var/tmp/mkinitramfs_*`, `/usr/lib/dracut`) écrit/exécute des artefacts
   scratch jamais utilisés par de la persistance malveillante. `allowlist_initramfs_paths`
@@ -401,7 +404,7 @@ par défaut est `all` (toutes fonctions), sans rien configurer.
 **Répartition des fonctions (ordre canonique, cf. `fn_order`) :**
 - `dns` — résolveurs DNS légitimes (`dns_ips` += `127.0.0.11`, `127.0.0.1`) + requêtes DNS
   internes (`allowlist_dns_queries` += `epr.elastic.co`, `infra-cdn.elastic.co`, `elasticsearch`).
-- `network` — egress réseau légitime universel (`allowlist_egress_ports` `[443,80,53]`,
+- `network` — egress réseau légitime universel (`allowlist_egress_ports` `[443,80,53,123]`,
   `allowlist_egress_procs` `['https']`, redondant avec le socle).
 - `docker` — réseaux docker/hôte internes vus en `::ffff:` (`allowlist_public_networks` +=
   `::ffff:172.16.–172.31.`, `::ffff:10.6.`, `::ffff:127.0.0.`, `::ffff:51.89.`) + `127.0.0.11`.
@@ -436,6 +439,13 @@ retourne une record plate avec TOUTES les clés attendues par le moteur.
   signaux (length / non_standard_dns_server / tld) d'une requête bénigne. Fonctions `dns`/`elk` :
   `epr.elastic.co`, `infra-cdn.elastic.co`, `elasticsearch` (résolus via le résolveur Docker
   `127.0.0.11`, ajouté à `dns_ips`).
+
+> **SUPERSEDÉ (2026-08-18, refactor flux)** : `allowlist_egress_paths` (MATCH `command_line`) et
+> `allowlist_egress_procs` (MATCH `task_name`) ne sont **plus consommées par les familles réseau**
+> (connect/send_data/dns_query). La décision egress est désormais de FLUX pur (IP + port réputés,
+> + corrélation DNS→FQDN en contexte). Les clés restent définies dans `kunai_local_cfg.nu` mais sont
+> mortes côté moteur réseau. La corrélation DNS→connect/FQDN ne se supprime plus par chemin de
+> command_line : le FQDN est une colonne de CONTEXTE du rapport. Voir §25.
 
 **Préfixes IP** : les réseaux docker/privés doivent être au format IPv4-mappé (`::ffff:172.19.`…)
 car kunai rend les adresses ainsi ; `allowlist_public_networks` matche un préfixe exact via
@@ -490,3 +500,64 @@ C2 externe → ce n'est pas de l'egress public.
 public ; filtrer d'abord les plages privées/mappées (correction générique, pas une allowlist
 locale). Cela ne masque aucune compromission : le trafic privé/docker n'est pas une exfiltration
 externe, et les destinations publiques réelles restent signalées.
+
+---
+
+## 24. Refactor EGRESS : suppression de la confiance process → analyse de FLUX IP/port + FQDN (2026-08-18)
+
+**Décision utilisateur (profondément lié au travail de this session)** : remplacer la confiance
+par **nom de processus** (allowlists `legit_agents`/`benign_utilities`/`allowlist_egress_procs`/
+`allowlist_egress_paths`) par une analyse de FLUX réseau (IP réputée, port standard, corrélation
+DNS→FQDN). **L'exigence « zéro FP » est ABANDONNÉE** ; Option A = corrélation DNS→connect **interne**
+(sans source externe). Objectif : faire disparaître `kunai_local_cfg`/`kunai_rules_local.nu` de la
+**décision egress**.
+
+### Ce qui a changé dans le moteur (`kunai_detect_compromise.nu`)
+
+- **`not_legit` retiré des familles réseau** (connect/send_data/dns_query). Il reste pour les
+  familles **non-réseau** : execve (:375), file_create (:464), kill (:657), bpf_prog_load (:674),
+  prctl (:720). `legit_agents`/`benign_utilities` ne sont plus consultés par l'egress.
+- **`detect_connect` / `detect_send_data`** : suppression de `c_allow_proc` (task_name),
+  `c_allow_path` (command_line), `c_allow_proc_or_path`. La réputation devient :
+  `c_reput_net` (IP ∈ `allowlist_public_networks`) `and` `c_reput_port` (port ∈ `allowlist_egress_ports`)
+  **ou** `c_ntp_port` (port == 123 seul). `c_egress_susp = c_public and (not c_reput)`.
+- **`detect_dns_query`** : plus de filtre `not_legit` ; la requête est jugée sur sa forme (FQDN)
+  et son résolveur, quel que soit le process.
+
+### Corrélations & contexte
+
+- **Helpers nouveaux** : `dns_fqdn_map [base]` (extrait les dns_query, explode la réponse `;`,
+  table plate `{task_pid, resolved_ip, fqdn}`, lazy) et `annotate_fqdn [df, dmap]`
+  (`polars join` left + coalesce `fqdn` null→`""`). **Appel impératif dans un pipeline** :
+  `| (annotate_fqdn $in $dmap)` (comme `unnestif`), sinon erreur du parser `missing dmap`.
+- Le FQDN d'une corrélation DNS→connect est **une colonne de CONTEXTE du rapport** (`fqdn`),
+  jamais une suppression automatique. Ajouté à `cols_keep` → rendu par `render_report` sans modif.
+- **`is_wildcard_dst []`** : `0.0.0.0`/`::`/`::1` = binds d'écoute, jamais une exfiltration.
+  Intégré dans `c_public` (`... and (not c_wildcard)`).
+
+### Critère de FLUX NTP (port 123)
+
+Le pool NTP public change d'IP en continu → **impossible à allowlister par IP**. La synchro système
+(chronyd/ntpd) port 123 est du trafic de fond bénin, pas un canal d'exfil exploitable (petits
+paquets fixes ; toute anomalie reste vue par send_data). => **le port 123 seul suffit à rendre
+l'egress réputé** (sans identité process). Port 80/443/53 restent gated sur la réputation IP
+(C2 peut les abuser : DNS vers 8.8.8.8 reste signalé).
+
+### Mécanique de dépréciation
+
+- `allowlist_egress_ports` (socle `[443,80,53,123]` + profil `network`) et
+  `allowlist_public_networks` : toujours actifs.
+- `allowlist_egress_procs` / `allowlist_egress_paths` : **plus consommées par l'egress**. Clés
+  conservées dans `kunai_local_cfg.nu` (extensibilité / docs), mortes côté moteur réseau.
+
+### Non-régression validée (2026-08-18)
+
+| échantillon | avant → après (connect) | remarque |
+| --- | --- | --- |
+| `22e4a57a` (référence) | 10 → **10** | fqdn=api.ipify.org sur oom_reaper→Cloudflare, dns_query 4 |
+| `15e67237` | 28 → **18** | 10 chronyd NTP (port 123) enfin silencieux ; reste le C2 réel `sample.bin`→66.23.233.179:9375 + DNS 8.8.8.8 |
+| send_data `22e4a57a` | 807 → **806** | 1 beacon NTP en moins, C2 présent |
+| send_data `15e67237` | 9286 → **9280** | idem |
+
+**Piège redis couvert** : ne JAMAIS se fier à `dst_public` seul (RFC1918 `::ffff:` mappées, §23) ;
+appliquer `c_public = (dst_public==true) and (not is_private_dst) and (not is_wildcard_dst)`.

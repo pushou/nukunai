@@ -111,6 +111,16 @@ export def is_private_dst [] {
     (starts_with_any 'dst_ip' $priv)
 }
 
+# expression polars booléenne : vraie si dst_ip est une adresse SAUVAGE/LOOPBACK
+# (`0.0.0.0`, `::`, `::1`) qu'un démon utilise pour BINDER son socket (écoute
+# sur toutes interfaces / loopback), et qui n'est donc JAMAIS une exfiltration.
+# Ces méta-événements de connect (kunai rend dst_public=true) correspondent à la
+# préparation d'un socket d'écoute, pas à une connexion sortante réelle. C'est un
+# critère de FLUX (classe d'adresse de destination), pas d'identité de processus.
+export def is_wildcard_dst [] {
+    (is_in_df 'dst_ip' ['0.0.0.0' '::' '::1'])
+}
+
 # =====================================================================
 # ---- Base lazy commune (unnests de base) -----------------------------
 # =====================================================================
@@ -274,6 +284,57 @@ export def empty_like [base] {
 }
 
 # =====================================================================
+# ---- Corrélation DNS -> FQDN (Option A, analyse de flux réseau) ------
+# =====================================================================
+# Construit une map (task_pid, resolved_ip) -> fqdn depuis les événements
+# dns_query (réponse "ip;ip;.." explosée en une ligne par IP résolue), puis
+# annote une frame réseau (connect/send_data) par jointure LEFT sur
+# (task_pid, dst_ip = resolved_ip). L'analyse de flux se fait par
+# IP / port / FQDN réputé, SANS confiance au NOM du processus : le nom de
+# process est un vecteur de persistance masqué facilement (cron/systemd), et
+# la corrélation DNS -> connect interne (kunai seul) suffit à donner le
+# domaine de destination observé.
+export def dns_fqdn_map [base] {
+    # lazy frame des requêtes DNS qu'on va exploser {task_pid, query, response}
+    let cols = ($base | polars schema | columns)
+    if 'response' not-in $cols { return ([[] [task_pid resolved_ip fqdn]] | polars into-df | polars into-lazy) }
+    let dns = ($base
+        | ev 'dns_query'
+        | polars filter ((polars col response) | polars is-not-null)
+        | polars select [task_pid query response])
+    # réponse "172.67.74.152;104.26.12.205;…" explosée : une ligne par IP résolue.
+    # DNS rare (1-4/sample) => la collecte eager est négligeable.
+    let flat = ($dns | polars collect | polars into-nu
+        | each {|r|
+            $r.response
+            | split row ';'
+            | each {|ip| $ip | str trim }
+            | where {|ip| ($ip | is-not-empty) }
+            | each {|ip| { task_pid: $r.task_pid, resolved_ip: $ip, fqdn: $r.query } }
+        }
+        | flatten)
+    if (($flat | length) == 0) {
+        # aucun FQDN résolu : lazy frame vide (mêmes colonnes) pour un join sûr.
+        [[] [task_pid resolved_ip fqdn]] | polars into-df | polars into-lazy
+    } else {
+        $flat | polars into-df | polars into-lazy
+    }
+}
+
+# annote une frame réseau (doit déjà exposer `task_pid` et `dst_ip`) d'une
+# colonne `fqdn` = domaine résolu (corrélation DNS -> connect), "" si inconnu.
+# Renvoie la frame annotée ; le fqdn sert de CONTEXTE au rapport (l'egress est
+# décidé par IP/port réputé, pas par le nom de processus).
+export def annotate_fqdn [df, dmap] {
+    ($df
+     | polars join $dmap -l [task_pid dst_ip] [task_pid resolved_ip]
+     | polars with-column (
+        (polars when ((polars col fqdn) | polars is-null) (polars lit "")
+         | polars otherwise (polars col fqdn))
+        | polars as fqdn))
+}
+
+# =====================================================================
 # ---- FAMILLE execve : exécution suspecte -----------------------------
 # =====================================================================
 export def detect_execve [base] {
@@ -418,46 +479,56 @@ export def detect_file_create [base] {
 # ---- FAMILLE connect : réseau sortant suspect ------------------------
 # =====================================================================
 export def detect_connect [base] {
-    # Ports inhabituels/suspects (règles kunai net_c2_port / net_cryptominer_pool, T1095/T1496) :
-    # - C2/backdoor : 4444,4445,31337,9001,8888,8443,1337,2222,9999
-    # - Tor (exit/OR) : 9050,9051,9150
-    # - Pools de minage (xmr/eth) : 5555,7777,14444,14433,45700,3256,20535,3333
-    # - divers/protocoles nets : 6667 (IRC/C2), 161,137,445,49152 (ephemeral)
-    # Ports C2/backdoor/Tor/mining et protocoles nets inhabituels pour une
-    # destination publique — pot commun r_connect_unusual_port (cf. le fichier
-    # de règle c2_unusual_port.connect.detection.yaml dans kunai_rules/rules_v0.1/).
+    # RÉFONTE FLUX RÉSEAU (Option A) : l'egress est jugé sur la RÉPUTATION de la
+    # DESTINATION (IP publique CDN/dépôt/miroir réputé + port standard), plus AUCUNE
+    # confiance au NOM/IDENTITÉ du processus. `not_legit`, `allowlist_egress_procs`
+    # et `allowlist_egress_paths` (identité process = vecteur de persistance dont
+    # le nom est trivialement masqué : cron/systemd/oom_reaper) disparaissent de la
+    # décision réseau. Le domaine résolu par corrélation DNS -> connect
+    # (`annotate_fqdn`) enrichit le rapport en CONTEXTE.
     let c_lbl_public = (r_connect_public_egress)
     # CORRECTIF GÉNÉRIQUE du bug kunai : `dst_public` est mal rendu=true pour les
     # RFC1918 IPv4-mappées `::ffff:` (trafic docker/hôte interne). Une destination
     # privée/bouclage n'est jamais de l'egress public -> on la retire de c_public.
     let c_private    = (is_private_dst)
-    let c_public     = (($c_lbl_public) and (($c_private) | polars expr-not))
+    # les adresses sauvages/loopback (0.0.0.0, ::, ::1) sont des binds d'écoute,
+    # jamais une exfiltration (critère de FLUX, pas d'identité process).
+    let c_wildcard   = (is_wildcard_dst)
+    let c_public     = (($c_lbl_public) and (($c_private) | polars expr-not) and (($c_wildcard) | polars expr-not))
+    # Ports inhabituels/suspects (pot commun r_connect_unusual_port, T1095/T1496) :
+    # C2/backdoor 4444/4445/31337/9001/8888/8443/1337/2222/9999 ; Tor 9050/9051/9150 ;
+    # pools de minage 5555/7777/14444/14433/45700/3256/20535/3333 ; nets 6667/161/137/445/49152.
     let c_port   = (r_connect_unusual_port)
-    # allowlist réseau EGRESS : destination publique réputée (CDN/miroir/dépôt) ET
-    # processus légitime de téléchargement. => bénin, on n'alerte pas.
-    let c_allow_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
-    let c_allow_proc = (is_in_df 'task_name' (local_cfg allowlist_egress_procs))
-    # egress par chemin de la command_line (binaires à task_name instable : threads
-    # ELK elasticsearch/logstash/kibana). Corrélation CONTEXTE LOCAL (profil).
-    let c_allow_path = (contains_any 'command_line' (local_cfg allowlist_egress_paths))
-    let c_allow_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
-    # process légitime = task_name allowlisté OU chemin de command_line allowlisté.
-    let c_allow_proc_or_path = (($c_allow_proc) or ($c_allow_path))
-    # public_egress SUSPECT = destination publique NON allowlistée, OU destination
-    # publique allowlistée mais vers un port inhabituel (ex. C2 sur 31337 d'une IP CDN).
-    let c_egress_susp = ($c_public and (($c_allow_net and $c_allow_proc_or_path and $c_allow_port) | polars expr-not))
+    # réputation FLUX de la destination : IP publique réputée (CDN/miroir/dépôt)
+    # ET port standard de service -> egress bénin, quelle que soit l'identité du process.
+    let c_reput_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
+    let c_reput_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
+    # public_egress SUSPECT = destination publique NON réputée (IP hors CDN/miroir
+    # OU port inhabituel). Autrefois dépendait de not_legit(TASK) + nom de process.
+    # Réputation : en général IP réputée ET port standard. EXCEPTION NTP (port 123,
+    # UDP) : le pool NTP public change d'IP en continu (impossible à allowlister par
+    # IP) et sa synchro système est du trafic de fond bénin, pas un canal d'exfil
+    # exploitable (petits paquets fixes ; toute anomalie reste vue par send_data).
+    # -> le port 123 seul suffit à rendre l'egress réputé (sans identité process).
+    let c_ntp_port = ((polars col dst_port) | polars is-in ([123] | polars into-df))
+    let c_reput = ((($c_reput_net) and ($c_reput_port)) or ($c_ntp_port))
+    let c_egress_susp = ($c_public and ($c_reput | polars expr-not))
     if (not (has_events $base 'connect')) { return (empty_like $base) }
+
+    # corrélation DNS -> FQDN : map (task_pid, resolved_ip)->fqdn réutilisée ensuite.
+    let dmap = (dns_fqdn_map $base)
 
     $base
     | ev 'connect'
-    | polars filter (not_legit)
     | (unnestif $in exe) | (unnestif $in socket) | (unnestif $in src) | (unnestif $in dst)
     | polars filter ((polars col dst_ip) | polars is-not-null)
     # dst_port 0 = événements de préparation de socket/RAW (résolution, bind via fd)
     # sans vraie connexion sortante : bruit systématique, on ne les signale pas ici.
     | polars filter ((polars col dst_port) != 0)
-    # dst_public doit être sélectionné pour être utilisable par with-column
-    | (cols_keep [utc_time task_name task_pid command_line src_ip dst_ip dst_port dst_public])
+    # Note : PAS de filtre not_legit / identité process — le flux est jugé seul.
+    | (annotate_fqdn $in $dmap)
+    # dst_public + fqdn doivent être sélectionnés pour être utilisables par with-column
+    | (cols_keep [utc_time task_name task_pid command_line src_ip dst_ip dst_port dst_public fqdn])
     | polars with-column (
         (polars when $c_egress_susp (polars lit "public_egress")
          | polars when $c_port (polars lit "unusual_port")
@@ -470,44 +541,50 @@ export def detect_connect [base] {
 # ---- FAMILLE send_data : exfiltration --------------------------------
 # =====================================================================
 export def detect_send_data [base] {
+    # RÉFONTE FLUX RÉSEAU (Option A) : même logique que connect — l'exfiltration
+    # est jugée sur la DESTINATION (IP publique réputée + port standard), SANS
+    # confiance au NOM/IDENTITÉ du processus (`not_legit`/`allowlist_egress_procs`/
+    # `allowlist_egress_paths` supprimés). Un envoi vers une cible NON réputée est
+    # suspecté (large_data/high_entropy → exfil) ; vers une cible réputée, silence.
+    # Le FQDN résolu (corrélation DNS -> connect) enrichit le rapport en CONTEXTE.
     let c_lbl_public = (r_connect_public_egress)
     # CORRECTIF GÉNÉRIQUE du bug kunai : `dst_public` est mal rendu=true pour les
     # RFC1918 IPv4-mappées `::ffff:` (trafic docker/hôte interne). Une destination
     # privée/bouclage n'est jamais de l'egress public -> on la retire de c_public.
     let c_private    = (is_private_dst)
-    let c_public     = (($c_lbl_public) and (($c_private) | polars expr-not))
+    # les adresses sauvages/loopback (0.0.0.0, ::, ::1) sont des binds d'écoute,
+    # jamais une exfiltration (critère de FLUX, pas d'identité process).
+    let c_wildcard   = (is_wildcard_dst)
+    let c_public     = (($c_lbl_public) and (($c_private) | polars expr-not) and (($c_wildcard) | polars expr-not))
     let c_big    = (r_senddata_large)
     let c_hi     = (r_senddata_high_entropy)
-    # Exfiltration = envoi de données vers une destination PUBLIQUE (C2/exfil).
-    # Le "high_entropy" seul ne suffit PAS : du trafic chiffré interne (agent vers
-    # son manager TLS, buildx vers le registry docker local) est normalement à
-    # entropie élevée. On ne le signale que si la destination est PUBLIQUE.
-    let c_allow_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
-    let c_allow_proc = (is_in_df 'task_name' (local_cfg allowlist_egress_procs))
-    # egress par chemin de la command_line (binaires à task_name instable : threads
-    # ELK elasticsearch/logstash/kibana). Corrélation CONTEXTE LOCAL (profil).
-    let c_allow_path = (contains_any 'command_line' (local_cfg allowlist_egress_paths))
-    let c_allow_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
-    # egress autorisé = destination publique allowlistée (CDN/dépôt) + process légitime
-    # (task_name OU chemin) + port standard. Un tel download vers une cible réputée est
-    # bénin, même si le contenu est chiffré (entropie élevée) : TLS vers crates.io/GitHub.
-    let c_allow_proc_or_path = (($c_allow_proc) or ($c_allow_path))
-    let c_allow_egress = ($c_allow_net and $c_allow_proc_or_path and $c_allow_port)
-    let c_egress_susp = ($c_public and ($c_allow_egress | polars expr-not))
-    # high_entropy / large_data SUSPECTES = envoi vers l'extérieur NON allowlisté
+    # réputation FLUX de la destination : IP publique réputée (CDN/miroir/dépôt)
+    # ET port standard de service -> egress bénin, quelle que soit l'identité du process.
+    # EXCEPTION NTP (port 123) : IP du pool changeant, synchro système bénigne,
+    # le port 123 seul rend l'egress réputé (voir detect_connect pour le raisonnement).
+    let c_reput_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
+    let c_reput_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
+    let c_ntp_port   = ((polars col dst_port) | polars is-in ([123] | polars into-df))
+    let c_reput = ((($c_reput_net) and ($c_reput_port)) or ($c_ntp_port))
+    let c_egress_susp = ($c_public and ($c_reput | polars expr-not))
+    # high_entropy / large_data SUSPECTES = envoi vers l'extérieur NON réputé
     # (C2/exfil). Le chiffrement vers une cible réputée (agent->manager TLS interne
-    # ou CDN public) n'est PAS exfiltration.
+    # ou CDN public) n'est PAS exfiltration, quelle que soit l'identité du process.
     let c_hi_susp  = ($c_hi  and $c_egress_susp)
     let c_big_susp = ($c_big and $c_egress_susp)
     if (not (has_events $base 'send_data')) { return (empty_like $base) }
 
+    # corrélation DNS -> FQDN : map (task_pid, resolved_ip)->fqdn réutilisée ensuite.
+    let dmap = (dns_fqdn_map $base)
+
     $base
     | ev 'send_data'
-    | polars filter (not_legit)
     | (unnestif $in exe) | (unnestif $in src) | (unnestif $in dst)
     | polars filter ((polars col dst_ip) | polars is-not-null)
-    # dst_public doit être sélectionné pour être utilisable par with-column
-    | (cols_keep [utc_time task_name task_pid command_line src_ip dst_ip dst_port data_size data_entropy dst_public])
+    # Note : PAS de filtre not_legit / identité process — le flux est jugé seul.
+    | (annotate_fqdn $in $dmap)
+    # dst_public + fqdn doivent être sélectionnés pour être utilisables par with-column
+    | (cols_keep [utc_time task_name task_pid command_line src_ip dst_ip dst_port data_size data_entropy dst_public fqdn])
     | polars with-column (
         (polars when $c_egress_susp (polars lit "public_egress")
          | polars when $c_big_susp (polars lit "large_data")
@@ -537,7 +614,8 @@ export def detect_dns_query [base] {
 
     $base
     | ev 'dns_query'
-    | polars filter (not_legit)
+    # Note : PAS de filtre not_legit / identité process — la requête DNS est jugée
+    # sur la forme (FQDN) et le résolveur, quel que soit le process émetteur.
     | (unnestif $in exe) | (unnestif $in src) | (unnestif $in dns_server)
     | polars filter ((polars col query) | polars is-not-null)
     | (cols_keep [utc_time task_name task_pid command_line query response dns_server_ip])

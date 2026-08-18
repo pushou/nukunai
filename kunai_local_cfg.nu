@@ -109,8 +109,10 @@ def default_defs [] {
             '10.6.',                           # NTP/paquets/miroirs locaux
         ],
         # Ports de service vers lesquels un "public_egress"/"send_data" N'est PAS
-        # suspect quand la destination est déjà allowlistée (443 https, 80 http, 53 dns).
-        allowlist_egress_ports: [443, 80, 53],
+        # suspect quand la destination est déjà allowlistée (443 https, 80 http,
+        # 53 dns, 123 ntp). 123 = synchro NTP système (chronyd/ntpd) vers le pool
+        # public : protocole standard, silencieux sous analyse de flux IP/port.
+        allowlist_egress_ports: [443, 80, 53, 123],
         # Processus (task_name) dont l'activité réseau sortante est légitime.
         # NB : ne filtre QUE par task_name exact. Pour du trafic dont le task_name
         # est instable ou trop générique (threads ELK "elastic..][T#3]",
@@ -185,7 +187,7 @@ def function_profiles [] {
         # Ports de service et transport TLS d'apt (déjà au socle, rappel explicite
         # pour qui désactive le socle implicite — redondant mais inoffensif).
         network: {
-            allowlist_egress_ports: [443, 80, 53],
+            allowlist_egress_ports: [443, 80, 53, 123],
             allowlist_egress_procs: ['https'],
         },
         # ── docker : réseaux docker/hôte internes vus en ::ffff: ────────────

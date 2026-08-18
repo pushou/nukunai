@@ -52,27 +52,27 @@ ngsoti_detail.nu / ngsoti_all.nu / ngsoti_report.nu   wrappers sur le dataset ng
 
 - `legit_agents` : vrais agents/services (dpkg, gitlab, dockerd, containerd, systemd, wazuh,
   crowdsec, splunk, check_mk, nginx, sshd, cron, dbus, polkit, NetworkManager, unattended-upgrade,
-  chronyd/chrony/systemd-timesyn*, audit*). Les services de synchro NTP (chronyd) sont des
-  agents système légitimes : leur trafic port 123 vers le pool Debian NTP n'est PAS une
-  exfiltration (rejoint not_legit). Ne pas les retirer sous peine de FP public_egress.
+  chronyd/chrony/systemd-timesyn*, audit*). **N'EST PLUS consulté par les familles réseau**
+  (connect/send_data/dns_query). Reste utilisé par execve, file_create, kill, bpf_prog_load,
+  prctl (`not_legit`). La synchro NTP (chronyd) est désormais tue par le CRITÈRE DE FLUX
+  port 123 (ci-dessous), pas par le nom de process.
 - `benign_utilities` : outils DÉTOURNABLES (docker, curl, wget, chmod, chown, tar, cp, bash…).
-  Ils ne sont bénins QUE s'ils viennent d'une chaîne légitime (voir `not_legit`).
+  Ils ne sont bénins QUE s'ils viennent d'une chaîne légitime (voir `not_legit`, familles non-réseau).
 - `allowlist_build_procs` / `allowlist_build_paths` : chaîne de build Rust (rustup, cargo,
   rustc, cc, as, /tmp/cargo-*, ~/.cargo, ~/.rustup…) dont l'activité scratch est bénigne.
 - `allowlist_initramfs_paths` / chaîne initramfs : écriture/exécution de la génération
   initramfs (mkinitramfs/dracut/update-initramfs sous /var/tmp/mkinitramfs_*, /usr/lib/dracut)
   jamais utilisée par de la persistance malveillante — même logique que allowlist_build.
-- `allowlist_egress_procs/ports/networks` : egress réseau légitime (cargo/git/apt/docker →
-  CDN Fastly, GitHub, GitLab/Cloudflare, registry docker local, ports 443/80/53).
-  Inclut les miroirs apt Debian desservis par AWS CloudFront/Global Accelerator/Cloudflare
-  (dont les plages 99.86./3.162. AMAZO-CF) et le process worker `https` — transport TLS
-  d'apt (/usr/lib/apt/methods/https) qui télécharge les paquets.
-- `allowlist_egress_paths` (MATCH command_line, corrélé dans detect_connect/send_data) et
-  `allowlist_dns_queries` (MATCH query, corrélé dans detect_dns_query) : profilables (fonctions
-  `elk` / `dns`), vides par défaut. Servent au bruit de la stack ELK/tpot (threads à tâche
-  instable elasticsearch/logstash/kibana résolus via le résolveur Docker 127.0.0.11). Les
-  helpers `starts_with_any`/`contains_any` renvoient `lit false` sur une liste VIDE (une
-  allowlist vide ne doit jamais tout matcher).
+- `allowlist_public_networks` + `allowlist_egress_ports` : réputation FLUX (IP + port
+  standard) de l'egress. IP = CDN/miroirs/dépôts (Fastly, GitHub, GitLab/Cloudflare, registry
+  docker local, miroirs apt Debian via AWS CloudFront/Global Accelerator — plages 99.86./3.162.
+  AMAZO-CF) ; ports = 443/80/53 (+ 123 NTP, voir exception). **Plus AUCUNE légalisation par
+  task_name/command_line** (`allowlist_egress_procs`/`allowlist_egress_paths` ne sont plus
+  consommées par l'egress — clés conservées dans local_cfg, mortes côté moteur réseau).
+- `allowlist_dns_queries` (MATCH query) : uniquement pour atténuer le bruit DNS ELK/tpot
+  (threads instables elasticsearch/logstash/kibana résolus via 127.0.0.11). Les helpers
+  `starts_with_any`/`contains_any` renvoient `lit false` sur une liste VIDE (une allowlist
+  vide ne doit jamais tout matcher).
 - `benign_signals` : SIGURG/SIGCHLD/SIGCONT/SIGWINCH/SIGIO/SIGPIPE (régulation docker/Go, jamais un kill suspect).
 
 ## Concepts de détection (à préserver)
@@ -82,9 +82,13 @@ ngsoti_detail.nu / ngsoti_all.nu / ngsoti_report.nu   wrappers sur le dataset ng
   serait masqué). Ne pas re-supprimer cette nuance.
 - **drop-and-run** (file_create / mmap_exec / exec_from_tmp) : un artefact tmp n'est suspect QUE
   s'il est réellement exécuté ET que l'écrivain n'est pas la chaîne build.
-- **send_data/connect public_egress** : le trafic chiffré/entropie élevée vers une cible
-  allowlistée (TLS agent/client interne, buildx→registry) n'est PAS une exfiltration. Corréler à
-  `dst_public` + `expr-not egress_allowlist`.
+- **connect/public_egress & send_data (analyse de FLUX, sans confiance process)** :
+  l'egress est suspect si destination publique NON réputée, où "réputée" = IP CDN/miroir
+  ET port standard **ou** port NTP 123 seul (synchro système ; IP du pool NTP changeant,
+  non allowlistable par IP, et UDP 123 n'est pas un canal d'exfil exploitable). Le FQDN
+  d'une corrélation DNS→connect est un CONTEXTE du rapport (colonne `fqdn`), jamais une
+  suppression. Le trafic entropie élevée/volumineux vers une cible réputée (agent→manager
+  TLS interne, CDN) n'est PAS une exfiltration.
 - **9 familles** : execve, file_create, connect, send_data, dns_query, kill, bpf_prog_load,
   mmap_exec, prctl.
 
