@@ -4,9 +4,27 @@ nushell polars scripts to analyse/filter kunai logs (jsonl to parquet file).
 <img src="images/explore.gif" width="150%" >
 
 ## requirements 
-Nushell and its blazzing fast polars plugins, kunai logs (install kunai (https://github.com/kunai-project/) or see ngsoti malware dataset)
+Nushell and its blazing fast polars plugins, kunai logs (install kunai (https://github.com/kunai-project/) or see ngsoti malware dataset)
 (it offers satisfactory performance with 100MB Kunai log files) 
 
+## repository layout
+
+| Script | Role |
+|--------|------|
+| `kunai_to_parquet.nu` | Convert a kunai `.gz`/`.jsonl` file to `.parquet` (lazy by default) |
+| `kunai_to_flatten_parquet.nu` | Convert then fully flatten a kunai log into `.parquet` |
+| `kunai_filter_events.nu` | Filter events by id, explore them, or save them back to `.parquet` |
+| `kunai_events_analysis.nu` | Event counters (per-event type) for a file |
+| `kunai_print_events_table.nu` | Print the kunai event id → name table |
+| `kunai_queries.nu` | Ad-hoc subcommand queries (dns, connect, command lines, file extensions…) |
+| `kunai_requests.nu` | Reference pipeline used as the architecture base for `kunai_queries.nu` |
+| `kunai_detect_compromise.nu` | **Compromise detection engine** (10 families: 9 event phenotypes + `ioc`) → `.md` + `.json` reports |
+| `kunai_rules.nu` | Generic (machine-independent) detection rules, `r_<fam>_<name>` → polars `Expr` |
+| `kunai_rules_local.nu` | Thin interface: `local_cfg <key> --profile "a,b"` resolving active functions |
+| `kunai_local_cfg.nu` | Parametrisable allowlists: strict `default` base + per-`function` profiles |
+| `ngsoti_detail.nu` | Detailed detection report for one NGSOTI sample (`FILE` env var) |
+| `ngsoti_all.nu` | Process every NGSOTI sample sequentially |
+| `ngsoti_report.nu` | Parallel summary of alerts per family for all samples |
 
 ## transform kunai jsonl files log file to parquet file
 ```
@@ -125,7 +143,7 @@ nu kunai_events_analysis.nu ./events.log.1503.gz
 
 
 
-## usefull oneliners
+## Useful oneliners
 
 ```
 polars open events.log.5319.parquet | polars shape
@@ -258,44 +276,45 @@ polars open kunai.jsonl_61.parquet
 ╰───┴───────────────┴──────────┴──────────────────────────────────────────╯
 ```
 
-## requêtes ad-hoc (`kunai_queries.nu`)
+## Ad-hoc queries (`kunai_queries.nu`)
 
-`kunai_queries.nu` structure en sous-commandes les oneliners ad-hoc (cf. archi
-`kunai_requests.nu`) sur un fichier kunai `.parquet` / `.gz` / `.jsonl`. Chaque
-sous-commande applique le pipeline type : `open_source` → `unnest data/info` +
-`unnest event` → filtre par nom → sélection des colonnes sûres (jamais Int128) →
-unnest/rename → group/value-counts → tri → `collect` → `into-nu`.
+`kunai_queries.nu` wraps the ad-hoc oneliners (cf. the `kunai_requests.nu`
+reference architecture) into subcommands that run against a kunai
+`.parquet` / `.gz` / `.jsonl` file. Each subcommand applies the standard
+pipeline: `open_source` → `unnest data/info` + `unnest event` → filter by
+name → select only safe columns (never Int128) → unnest/rename →
+group/value-counts → sort → `collect` → `into-nu`.
 
 ```
-nu kunai_queries.nu <requête> <file> [--top N] [--filter RE] [--all] [--infer-schema N]
+nu kunai_queries.nu <query> <file> [--top N] [--filter RE] [--all] [--infer-schema N]
 nu kunai_queries.nu help
-nu kunai_queries.nu <requête> --help   # help détaillé de la sous-commande
+nu kunai_queries.nu <query> --help   # detailed help for that subcommand
 ```
 
-Chaque requête est une **vraie sous-commande nushell** (`main <requête>`) : son
-`--help` affiche sa propre signature, ses flags et leurs descriptions. Le fichier
-peut être omis (message d'erreur gracieux via `require_file`).
+Each query is a **real nushell subcommand** (`main <query>`): its `--help`
+shows its own signature, flags and flag descriptions. The file can be omitted
+(graceful error via `require_file`).
 
-| requête          | description                                             |
-|------------------|---------------------------------------------------------|
-| `events`         | compte d'événements par nom                             |
-| `dns`            | requêtes DNS groupées par query (`--top`/`--all`)       |
-| `command-lines`  | command_line execve les plus fréquentes (`--top`/`--all`)|
-| `exes`           | palette d'exécutables (1er mot command_line)            |
-| `connect-ips`    | top dst_ip des connexions                               |
-| `connect-ports`  | top dst_port des connexions                             |
-| `network`        | vue réseau command_line + dst connect (`--filter`)      |
-| `file-extensions`| extensions des fichiers créés                           |
-| `kill-targets`   | cibles tuées (kill)                                     |
-| `prctl-options`  | options prctl groupées (task, option)                    |
-| `file-renames`   | renommages de fichiers (old → new)                        |
-| `file-unlinks`   | chemins les plus supprimés (file_unlink)                  |
-| `mmap-execs`     | fichiers mappés RX (`-s` filtre drop-and-run tmp/fd/memfd)|
-| `bpf-progs`      | programmes BPF par type + nom + process                   |
-| `send-ports`     | top ports du send_data                                  |
-| `send-ips`       | top IPs du send_data                                    |
+| query           | description                                            |
+|-----------------|--------------------------------------------------------|
+| `events`        | event count per name                                   |
+| `dns`           | DNS queries grouped by query (`--top`/`--all`)         |
+| `command-lines` | most frequent execve command_line (`--top`/`--all`)    |
+| `exes`          | executable palette (first word of command_line)        |
+| `connect-ips`   | top connection dst_ip                                  |
+| `connect-ports` | top connection dst_port                                |
+| `network`       | network view command_line + dst connect (`--filter`)   |
+| `file-extensions`| extensions of created files                           |
+| `kill-targets`  | killed targets (kill)                                  |
+| `prctl-options` | prctl options grouped (task, option)                    |
+| `file-renames`  | file renames (old → new)                                |
+| `file-unlinks`  | most unlinked paths (file_unlink)                       |
+| `mmap-execs`    | mapped RX files (`-s` filters drop-and-run tmp/fd/memfd)|
+| `bpf-progs`     | BPF programs by type + name + process                   |
+| `send-ports`    | top send_data ports                                     |
+| `send-ips`      | top send_data IPs                                       |
 
-Exemples :
+Examples:
 
 ```
 nu kunai_queries.nu events           logs/ngsoti/<hash>/kunai.jsonl.gz
@@ -379,7 +398,7 @@ standard utilities, local IPs) or **suspicious**. The process-side families
 (`execve`, `file_create`, `kill`, `bpf_prog_load`, `mmap_exec`, `prctl`) are
 judged by the **process chain**: hijackable utilities (`docker`, `chmod`,
 `curl`, `bash`…) are only benign when they come from a legitimate chain. The
-network families (`connect`/`send_data`/`dns_query`) are judged by **flux** —
+network families (`connect`/`send_data`/`dns_query`) are judged by **traffic flow** —
 destination IP reputation + port reputation, with the correlated DNS FQDN
 kept as report context — never by the process that opened the connection.
 
@@ -390,7 +409,7 @@ kept as report context — never by the process that opened the connection.
 nu kunai_detect_compromise.nu
 
 # explicit files
-nu kunai_detect_compromise.nu fichier1.gz fichier2.gz
+nu kunai_detect_compromise.nu file1.gz file2.gz
 
 # analyse a Parquet file
 nu kunai_detect_compromise.nu kunai.jsonl.parquet
@@ -418,7 +437,7 @@ system noise from the report), `-I/--ioc <file>` (MISP JSONL feed for the
 
 Two upstream rule repositories are embedded as git **submodules** so that the
 nukunai engine can be cross-checked against the official kunai rules and their
-phenotypes reused in `kunai_rules.nu` (generic pot commun):
+phenotypes reused in `kunai_rules.nu` (generic shared pool):
 
 | Submodule | Upstream | Content |
 |-----------|----------|---------|
@@ -432,10 +451,10 @@ git submodule update --init --recursive
 ```
 
 They are read-only references for cross-checking. The engine itself stays
-self-contained in `kunai_rules.nu` (generic pot commun), `kunai_rules_local.nu`
+self-contained in `kunai_rules.nu` (generic shared pool), `kunai_rules_local.nu`
 (thin interface) + `kunai_local_cfg.nu` (local context: strict `default` base +
 **function** profiles `dns`/`network`/`docker`/`elk`/`kube`) and the local
-`kunai_rules/rules_v0.1/*.detection.kun` pot commun
+`kunai_rules/rules_v0.1/*.detection.kun` shared pool
 (same gene syntax as the upstreames), so the analysis never depends on network
 access. `-p/--profile <fcts>` on the engine selects the active allowlist
 functions (e.g. `-p dns,network`); resolution order is explicit flag >
