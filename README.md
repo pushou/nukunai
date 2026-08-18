@@ -251,6 +251,47 @@ polars open kunai.jsonl_61.parquet
 ╰───┴───────────────┴──────────┴──────────────────────────────────────────╯
 ```
 
+## requêtes ad-hoc (`kunai_queries.nu`)
+
+`kunai_queries.nu` structure en sous-commandes les oneliners ad-hoc (cf. archi
+`kunai_requests.nu`) sur un fichier kunai `.parquet` / `.gz` / `.jsonl`. Chaque
+sous-commande applique le pipeline type : `open_source` → `unnest data/info` +
+`unnest event` → filtre par nom → sélection des colonnes sûres (jamais Int128) →
+unnest/rename → group/value-counts → tri → `collect` → `into-nu`.
+
+```
+nu kunai_queries.nu <requête> <file> [--top N] [--filter RE] [--all] [--infer-schema N]
+nu kunai_queries.nu help
+nu kunai_queries.nu <requête> --help   # help détaillé de la sous-commande
+```
+
+Chaque requête est une **vraie sous-commande nushell** (`main <requête>`) : son
+`--help` affiche sa propre signature, ses flags et leurs descriptions. Le fichier
+peut être omis (message d'erreur gracieux via `require_file`).
+
+| requête          | description                                             |
+|------------------|---------------------------------------------------------|
+| `events`         | compte d'événements par nom                             |
+| `dns`            | requêtes DNS groupées par query (`--top`/`--all`)       |
+| `command-lines`  | command_line execve les plus fréquentes (`--top`/`--all`)|
+| `exes`           | palette d'exécutables (1er mot command_line)            |
+| `connect-ips`    | top dst_ip des connexions                               |
+| `connect-ports`  | top dst_port des connexions                             |
+| `network`        | vue réseau command_line + dst connect (`--filter`)      |
+| `file-extensions`| extensions des fichiers créés                           |
+| `kill-targets`   | cibles tuées (kill)                                     |
+| `send-ports`     | top ports du send_data                                  |
+| `send-ips`       | top IPs du send_data                                    |
+
+Exemples :
+
+```
+nu kunai_queries.nu events           logs/ngsoti/<hash>/kunai.jsonl.gz
+nu kunai_queries.nu connect-ips      logs/ngsoti/<hash>/kunai.jsonl.gz --top 5
+nu kunai_queries.nu dns              logs/ngsoti/<hash>/kunai.jsonl.gz --all
+nu kunai_queries.nu network          logs/ngsoti/<hash>/kunai.jsonl.gz --filter 'curl'
+```
+
 ## filter command lines
 
 ```
