@@ -122,6 +122,22 @@ export def is_wildcard_dst [] {
 }
 
 # =====================================================================
+# ---- Mode BRUIT ------------------------------------------------------
+# =====================================================================
+# Par défaut, le moteur remonte TOUT le trafic/flux réel (y compris le bruit
+# système bénin : synchro NTP chronyd, reverse-DNS iptables, résolutions de
+# services ELK/docker). C'est un choix d'ANALYSTE : voir le bruit plutôt que
+# rien, et le supprimer explicitement si besoin.
+# `--no-noise` (flag main -> $env.KUNAI_NOISE) bascule en mode SUPPRESSION :
+# les flux connus bénins (port NTP 123, allowlist dns + reverse-PTR) sont alors
+# filtrés, ne laissant que les vraies anomalies (le comportement des commits
+# e968143/39d1226).
+export def noise_off [] { (($env.KUNAI_NOISE? | default "") == "true") }
+# Détection à l'ENVERS pour du polars : "bruit présent" (vrai QUAND NOISE OFF)
+# utilisé pour neutraliser un critère quand on veut garder le bruit par défaut.
+export def noise_keep [] { (noise_off | polars expr-not) }
+
+# =====================================================================
 # ---- Base lazy commune (unnests de base) -----------------------------
 # =====================================================================
 export def build_base [file: string, infer_schema: int] {
@@ -281,6 +297,54 @@ export def empty_like [base] {
     $base
     | polars filter ((polars col event_info_name) == 'kunai__no_such_event')
     | polars select [utc_time]
+}
+
+# =====================================================================
+# ---- IOC MISP (misp-to-kunai) ---------------------------------------
+# =====================================================================
+# Chargement des indicateurs de compromission extraits de MISP, au format JSONL
+# (une ligne = un IOC, ex. misp.iocs) :
+#   {"type":"sha256","value":"<hash>","severity":<n>,"source":"CIRCL OSINT Feed",…}
+# Types exploités : sha256 / sha1 / md5 (hash de binaire → execve/file_create/mmap_exec),
+# ip-dst (→ connect/send_data) et domain (→ dns_query). Les autres types sont ignorés.
+# Renvoie un record { sha256, sha1, md5, ip, domain } avec les valeurs UNIQUES.
+export def load_misp_iocs [path: string] {
+    if not ($path | path exists) {
+        print $"(ansi yellow)⚠ aucun fichier IOC: ($path) — famille ioc inactive(ansi reset)"
+        return { sha256: [], sha1: [], md5: [], ip: [], domain: [] }
+    }
+    let rows = (open --raw $path | from json --objects)
+    {
+        sha256: ($rows | where type == 'sha256' | get value | into string | uniq)
+        sha1:   ($rows | where type == 'sha1'   | get value | into string | uniq)
+        md5:    ($rows | where type == 'md5'    | get value | into string | uniq)
+        ip:     ($rows | where type == 'ip-dst' | get value | into string | uniq)
+        domain: ($rows | where type == 'domain' | get value | into string | uniq)
+    }
+}
+
+# Table polars de TOUS les IOC exploitables (pour un JOIN qui conserve, pour
+# chaque valeur matchée, son type, sa sévérité et sa source). Lue directement
+# du fichier JSONL ($path). Colonnes : ioc_type, ioc_value, ioc_severity,
+# ioc_source. Vide (0 ligne) si le fichier est absent, vide ou sans IOC utile.
+export def misp_ioc_table [path: string] {
+    if not ($path | path exists) { return ([[] [ioc_type ioc_value ioc_severity ioc_source]] | polars into-df | polars into-lazy) }
+    let rows = (open --raw $path | from json --objects)
+    let keep = ($rows
+        | where {|r| $r.type in ['sha256', 'sha1', 'md5', 'ip-dst', 'domain'] }
+        | each {|r|
+            {
+                ioc_type: $r.type
+                ioc_value: ($r.value | into string)   # certaines sources MISP sortent value en int
+                ioc_severity: $r.severity
+                ioc_source: $r.source
+            }
+        })
+    if ($keep | is-empty) {
+        [[] [ioc_type ioc_value ioc_severity ioc_source]] | polars into-df | polars into-lazy
+    } else {
+        $keep | polars into-df | polars into-lazy
+    }
 }
 
 # =====================================================================
@@ -509,9 +573,13 @@ export def detect_connect [base] {
     # UDP) : le pool NTP public change d'IP en continu (impossible à allowlister par
     # IP) et sa synchro système est du trafic de fond bénin, pas un canal d'exfil
     # exploitable (petits paquets fixes ; toute anomalie reste vue par send_data).
-    # -> le port 123 seul suffit à rendre l'egress réputé (sans identité process).
+    # -> le port 123 seul suffit à rendre l'egress réputé **uniquement en mode
+    # --no-noise**. SANS --no-noise (défaut), on veut VOIR ce bruit système
+    # (chronyd NTP ressort en public_egress), cohérent avec le choix analyste.
     let c_ntp_port = ((polars col dst_port) | polars is-in ([123] | polars into-df))
-    let c_reput = ((($c_reput_net) and ($c_reput_port)) or ($c_ntp_port))
+    # NTP ne rend l'egress réputé que si la SUPPRESSION du bruit est active.
+    let c_ntp_benign = (($c_ntp_port) and (polars lit (noise_off)))
+    let c_reput = ((($c_reput_net) and ($c_reput_port)) or ($c_ntp_benign))
     let c_egress_susp = ($c_public and ($c_reput | polars expr-not))
     if (not (has_events $base 'connect')) { return (empty_like $base) }
 
@@ -565,7 +633,10 @@ export def detect_send_data [base] {
     let c_reput_net  = (starts_with_any 'dst_ip' (local_cfg allowlist_public_networks))
     let c_reput_port = ((polars col dst_port) | polars is-in (local_cfg allowlist_egress_ports | polars into-df))
     let c_ntp_port   = ((polars col dst_port) | polars is-in ([123] | polars into-df))
-    let c_reput = ((($c_reput_net) and ($c_reput_port)) or ($c_ntp_port))
+    # NTP ne rend l'egress réputé que si la SUPPRESSION du bruit est active
+    # (par défaut on VOIT le bruit NTP chronyd). Voir detect_connect.
+    let c_ntp_benign = (($c_ntp_port) and (polars lit (noise_off)))
+    let c_reput = ((($c_reput_net) and ($c_reput_port)) or ($c_ntp_benign))
     let c_egress_susp = ($c_public and ($c_reput | polars expr-not))
     # high_entropy / large_data SUSPECTES = envoi vers l'extérieur NON réputé
     # (C2/exfil). Le chiffrement vers une cible réputée (agent->manager TLS interne
@@ -607,11 +678,14 @@ export def detect_dns_query [base] {
     # Reverse-DNS (PTR) `*.in-addr.arpa`/`*.ip6.arpa` : forme IP->hostname des outils
     # d'administration (iptables -L, traceroute…), jamais du tunneling (r_dns_reverse).
     # Une requête bénigne/inverse ne doit déclencher AUCUNE évidence dns_query (ni
-    # length, ni non_standard_dns_server, ni tld) — on neutralise les 3 signaux.
-    let c_benign = ((contains_any 'query' (local_cfg allowlist_dns_queries)) or (r_dns_reverse))
-    let c_tld_s    = (($c_tld)    and (($c_benign) | polars expr-not))
-    let c_long_s   = (($c_long)   and (($c_benign) | polars expr-not))
-    let c_nondns_s = (($c_nondns) and (($c_benign) | polars expr-not))
+    # length, ni non_standard_dns_server, ni tld) — MAIS seulement **en mode
+    # --no-noise**. Par défaut (sans --no-noise) on VOIT le bruit dns (pool.ntp.org
+    # chronyd, reverse-DNS iptables) : c_benign_nn est alors FAUX, tous les signaux
+    # dns_query s'appliquent. Cohérent avec le choix analyste (bruit visible).
+    let c_benign_nn = ((((contains_any 'query' (local_cfg allowlist_dns_queries)) or (r_dns_reverse)) and (polars lit (noise_off))))
+    let c_tld_s    = (($c_tld)    and (($c_benign_nn) | polars expr-not))
+    let c_long_s   = (($c_long)   and (($c_benign_nn) | polars expr-not))
+    let c_nondns_s = (($c_nondns) and (($c_benign_nn) | polars expr-not))
     if (not (has_events $base 'dns_query')) { return (empty_like $base) }
 
     $base
@@ -729,8 +803,116 @@ export def detect_prctl [base] {
 }
 
 # =====================================================================
-# ---- Affichage d'une famille : dataframe nu --------------------------
+# ---- FAMILLE ioc : correspondance MISP (hash / IP / domaine) --------
 # =====================================================================
+# 10e famille, alimentée par un fichier d'indicateurs de compromission extraits
+# de MISP (JSONL, ex. misp.iocs). Contrairement aux autres familles (phénotypes
+# issus des règles), ici c'est un MATCH EXACT contre un flux externe :
+#   - sha256 / sha1 / md5  -> binaire exécuté (execve) ou déposé (file_create)
+#                            ou mappé (mmap_exec) dont l'empreinte correspond ;
+#   - ip-dst               -> dst.ip d'un connect / send_data correspondant ;
+#   - domain               -> query d'un dns_query correspondant.
+# Le chemin du fichier IOC est lu via $env.KUNAI_IOC (posé par --ioc de main),
+# défaut "misp.iocs". Les autres types MISP sont ignorés (inaptes à kunai).
+# Chaque détection porte evidence="misp_ioc" + la colonne ioc_value matchée.
+export def detect_ioc [base] {
+    let ioc_path = ($env.KUNAI_IOC? | default 'misp.iocs')
+    let itab = (misp_ioc_table $ioc_path)
+
+    # Colonnes communes portées par chaque détection IOC (les colonnes spécifiques
+    # — exe_path / dst_ip / query — sont volontairement écartées de l'union : elles
+    # varient selon le groupe et feraient échouer le concat ; la valeur matchée est
+    # portée par ioc_value).
+    let common = [utc_time task_name task_pid command_line ioc_type ioc_value ioc_severity ioc_source]
+
+    mut all = []   # liste de lazy frames, chacune déjà ramenée au schéma $common
+
+    # ---- HASH : execve + file_create (exe_*) et mmap_exec (mapped_*) ----
+    let exec_frame = (
+        $base
+        | polars filter ((polars col event_info_name) | polars is-in (['execve', 'file_create'] | polars into-df))
+        | (unnestif $in exe)
+        | cols_keep [utc_time task_name task_pid command_line exe_sha256 exe_sha1 exe_md5]
+    )
+    let mmap_frame = (
+        $base
+        | polars filter ((polars col event_info_name) == 'mmap_exec')
+        | (unnestif $in exe) | (unnestif $in mapped)
+        | (normalize_mapped $in)
+        | cols_keep [utc_time task_name task_pid command_line mapped_sha256 mapped_sha1 mapped_md5]
+    )
+    # Pour chaque groupe (frame + colonnes de hachage sha256/sha1/md5) on joint la
+    # table IOC du type correspondant ; une colonne absente est simplement sautée.
+    for g in [[$exec_frame exe_sha256 exe_sha1 exe_md5] [$mmap_frame mapped_sha256 mapped_sha1 mapped_md5]] {
+        let frame = $g.0
+        mut parts = []
+        for t in ['sha256' 'sha1' 'md5'] {
+            let col = (match $t { 'sha256' => $g.1, 'sha1' => $g.2, _ => $g.3 })
+            let has = ($frame | polars schema | columns | where {|c| $c == $col } | length) > 0
+            if not $has { continue }
+            let lookup = ($itab | polars filter ((polars col ioc_type) == $t))
+            $parts = ($parts | append (
+                $frame
+                | polars join $lookup -i [$col] [ioc_value]
+                # la jointure interne élimine la clé droite ioc_value ; comme elle
+                # vaut la clé gauche (match exact), on la reconstruit depuis $col.
+                | polars with-column ((polars col $col) | polars as ioc_value)
+                | cols_keep $common
+            ))
+        }
+        let np = ($parts | length)
+        if $np == 1 { $all = ($all | append $parts.0) }
+        if $np > 1 { $all = ($all | append (polars concat ...$parts)) }
+    }
+
+    # ---- IP : dst.ip d'un connect / send_data (type ip-dst) ----
+    let ip_frame = (
+        $base
+        | polars filter ((polars col event_info_name) | polars is-in (['connect', 'send_data'] | polars into-df))
+        | (unnestif $in dst)
+        | cols_keep [utc_time task_name task_pid command_line dst_ip]
+    )
+    let ip_has_col = ('dst_ip' in ($ip_frame | polars schema | columns))
+    let ip_types = ($itab | polars select [ioc_type] | polars collect | polars into-nu | get ioc_type | uniq)
+    if ($ip_has_col and ('ip-dst' in $ip_types)) {
+        let lookup = ($itab | polars filter ((polars col ioc_type) == 'ip-dst'))
+        $all = ($all | append (
+            $ip_frame
+            | polars join $lookup -i [dst_ip] [ioc_value]
+            | polars with-column ((polars col dst_ip) | polars as ioc_value)
+            | cols_keep $common
+        ))
+    }
+
+    # ---- DOMAIN : query d'un dns_query (type domain) ----
+    let dns_frame = (
+        $base
+        | polars filter ((polars col event_info_name) == 'dns_query')
+        | cols_keep [utc_time task_name task_pid command_line query]
+    )
+    let dns_has_col = ('query' in ($dns_frame | polars schema | columns))
+    let dns_types = ($itab | polars select [ioc_type] | polars collect | polars into-nu | get ioc_type | uniq)
+    if ($dns_has_col and ('domain' in $dns_types)) {
+        let lookup = ($itab | polars filter ((polars col ioc_type) == 'domain'))
+        $all = ($all | append (
+            $dns_frame
+            | polars join $lookup -i [query] [ioc_value]
+            | polars with-column ((polars col query) | polars as ioc_value)
+            | cols_keep $common
+        ))
+    }
+
+    if ($all | is-empty) { return (empty_like $base) }
+
+    # Union — chaque branche est déjà au schéma $common ; une seule branche = direct,
+    # plusieurs = concat. On ajoute la colonne evidence puis c'est tout.
+    let union = if ($all | length) == 1 { $all.0 } else { (polars concat ...$all) }
+    $union
+    | polars with-column ((polars lit "misp_ioc") | polars as evidence)
+}
+
+
+
 export def show_family [base, family: string, num: int, explore: bool] {
     let l2 = (match $family {
         'execve'        => (detect_execve $base)
@@ -742,6 +924,7 @@ export def show_family [base, family: string, num: int, explore: bool] {
         'bpf_prog_load' => (detect_bpf $base)
         'mmap_exec'     => (detect_mmap_exec $base)
         'prctl'         => (detect_prctl $base)
+        'ioc'           => (detect_ioc $base)
         _ => { error make { msg: $"famille inconnue: ($family)" } }
     })
     let rows = ($l2 | polars collect | polars into-nu)
@@ -901,6 +1084,7 @@ export def render_report [base, max_rows: int = 25] {
         bpf_prog_load: (detect_bpf $base | polars collect | polars into-nu)
         mmap_exec:     (detect_mmap_exec $base | polars collect | polars into-nu)
         prctl:         (detect_prctl $base | polars collect | polars into-nu)
+        ioc:           (detect_ioc $base | polars collect | polars into-nu)
     }
 
     let fam_counts = ($data | items {|fam, rows| { $fam: ($rows | length) } }
@@ -994,7 +1178,7 @@ export def report_json [file: string, ts: string, rep: record] {
 # de la procédure de détection, pas dans les wrappers.
 export def report_families [] {
     ['execve','file_create','connect','send_data','dns_query','kill',
-     'bpf_prog_load','mmap_exec','prctl']
+     'bpf_prog_load','mmap_exec','prctl','ioc']
 }
 
 # Nom descriptif d'un rapport, construit à partir des familles de détection
@@ -1025,11 +1209,19 @@ def main [
     --force-convert                      # reconvertir même si le cache parquet est à jour
     --cache-dir: string                  # dossier pour les parquet de conversion (défaut : à côté de la source)
     --profile (-p): string               # fonctions local_cfg actives : ex. "dns,network" (défaut : "all" = toutes)
+    --no-noise (-N)                      # SUPPRIMER le bruit système bénin (NTP chronyd, reverse-DNS, allowlist dns)
+    --ioc (-I): string = "misp.iocs"     # fichier d'IOC MISP (JSONL) pour la famille ioc (hash/IP/domaine)
 ] {
     # Sélection des FONCTIONS de config locale : --profile explicite (liste CSV de
     # fonctions) > $env.KUNAI_PROFILE > "all" (toutes fonct­ions — cf. kunai_local_cfg.nu).
     # On propage le --profile au module importé via la variable d'env du process.
     if ($profile | is-not-empty) { $env.KUNAI_PROFILE = $profile }
+    # Mode SUPPRESSION du bruit : par défaut le moteur VOIT le bruit système bénin
+    # (chronyd NTP port 123, reverse-DNS iptables, allowlist dns). Avec --no-noise,
+    # ces flux connus bénins sont filtrés (noise_off -> $env.KUNAI_NOISE).
+    if $no_noise { $env.KUNAI_NOISE = "true" }
+    # Chemin du fichier d'IOC MISP pour la famille ioc (posé pour detect_ioc).
+    if ($ioc | is-not-empty) { $env.KUNAI_IOC = $ioc }
 
     # fichiers par défaut : les 2 .gz les plus récents du registry.
     # On exclut toujours le fichier vivant `events.log` (log non compressé en cours
@@ -1055,7 +1247,7 @@ def main [
     let scan_ts = (date now | format date "%Y%m%d_%H%M%S")
 
     let families = if $family == 'all' {
-        ['execve','file_create','connect','send_data','dns_query','kill','bpf_prog_load','mmap_exec','prctl']
+        ['execve','file_create','connect','send_data','dns_query','kill','bpf_prog_load','mmap_exec','prctl','ioc']
     } else { [$family] }
 
     for file in $file_list {
