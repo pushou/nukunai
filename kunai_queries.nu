@@ -316,9 +316,12 @@ def "main exes" [
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun execve dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
 }
 
-# Top dst_ip des connexions (filter_connect).
+# Top IPs de destination des connexions. `--public` n'affiche que les IP
+# réellement publiques (écarte RFC1918 / loopback / réseaux Docker internes,
+# y compris les IPv4-mappées ::ffff:).
 def "main connect-ips" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
@@ -338,8 +341,20 @@ def "main connect-ips" [
         | polars value-counts
         | polars sort-by [count dst_ip] -r [true false]
         | polars collect
-        | polars into-nu)
+        | polars into-nu
+        | where {|r| if not $public { true } else { (is_public_ip ($r.dst_ip | into string)) } })
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucune connexion dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
+}
+
+# Appel direct `connect-ips` (après `source kunai_queries.nu`), alias de `main connect-ips`.
+def connect-ips [
+    file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --public (-p)         # ne garder que les IP réellement publiques
+    --top: int = 10       # nombre de lignes
+    --all (-a)            # toutes les lignes
+    --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
+] {
+    main connect-ips $file --public=$public --top=$top --all=$all --infer-schema=$infer_schema
 }
 
 # Top dst_port des connexions.
@@ -746,8 +761,11 @@ def "main send-ports" [
 }
 
 # Top IPs de destination du send_data (dst_ip après dépliage de dst).
+# `--public` n'affiche que les IP réellement publiques (écarte RFC1918 / loopback /
+# réseaux Docker internes, y compris les IPv4-mappées ::ffff:).
 def "main send-ips" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
@@ -767,18 +785,20 @@ def "main send-ips" [
         | polars value-counts
         | polars sort-by [count dst_ip] -r [true false]
         | polars collect
-        | polars into-nu)
+        | polars into-nu
+        | where {|r| if not $public { true } else { (is_public_ip ($r.dst_ip | into string)) } })
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun send_data dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
 }
 
 # Appel direct `send-ips` (après `source kunai_queries.nu`), alias de `main send-ips`.
 def send-ips [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
-    main send-ips $file --top=$top --all=$all --infer-schema=$infer_schema
+    main send-ips $file --public=$public --top=$top --all=$all --infer-schema=$infer_schema
 }
 
 # Extraction consolidée des IOC (indicateurs de compromission), équivalent nushell
