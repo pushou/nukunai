@@ -25,6 +25,7 @@
 #   network          vue réseau : command_line + dst (flatten)
 #   dst-ports        ports + ancestors uniques groupés par IP de destination (dst nested ou aplati)
 #   file-extensions  extensions des chemins créés          (filter_write)
+#   file-creates     fichiers créés : chemin + binaire écrivain (file_create)
 #   kill-targets     cibles tuées (kill)                   (filter_kill)
 #   prctl-options    options prctl par processus
 #   file-renames     renommages old->new (file_rename)
@@ -177,7 +178,7 @@ const EVENT_QUERY = {
     connect:       'connect-ips / connect-ports / network / dst-ports'
     send_data:     'send-ips / send-ports'
     dns_query:     'dns'
-    file_create:   'file-extensions'
+    file_create:   'file-extensions / file-creates'
     kill:          'kill-targets'
     prctl:         'prctl-options'
     file_rename:   'file-renames'
@@ -426,6 +427,36 @@ def "main network" [
         | polars collect
         | polars into-nu)
     if ($filter | is-empty) { $all_rows } else { $all_rows | where {|r| $r.command_line =~ $filter} }
+}
+
+# Liste des fichiers créés (file_create) : chemin créé + binaire écrivain.
+# `path` = chemin créé (ex. /root/bin), `exe_path` = binaire qui écrit (ex. /tmp/sample.bin).
+def "main file-creates" [
+    file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --top: int = 20       # nombre de lignes
+    --all (-a)            # toutes les lignes
+    --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
+] {
+    if not (require_file $file) { return }
+    let base = (events_frame $file $infer_schema 'file_create')
+    let cols = ($base | polars schema | columns)
+    if 'path' not-in $cols {
+        print $"(ansi yellow)✗ colonne path absente pour file_create(ansi reset)"
+        return
+    }
+    # le chemin créé (path) est renommé pour ne pas entrer en collision avec exe_path
+    # lors de l'unnest de la struct `exe` (même logique que event -> event_info).
+    let renamed = if 'exe' in $cols { $base | polars rename path created_path } else { $base }
+    let df = ($renamed
+        | unnestif $in 'exe'
+        | (if 'exe' in $cols { polars rename exe_path writer_path } else { $in })
+        | cols_keep [created_path writer_path command_line]
+        | polars drop-nulls
+        | polars unique -s [created_path]
+        | polars sort-by created_path
+        | polars collect
+        | polars into-nu)
+    if (($df | length) == 0) { print $"(ansi yellow)✗ aucun file_create dans ce fichier(ansi reset)" } else if $all { $df } else { $df | first $top }
 }
 
 # Extensions des chemins créés (file_create / filter_write).
@@ -699,6 +730,7 @@ const REQUESTS = {
     network:           { desc: 'vue réseau command_line + dst connect', arg: '--filter' }
     'dst-ports':       { desc: 'ports + ancestors uniques groupés par IP de destination', arg: '--top/--all' }
     'file-extensions': { desc: 'extensions des fichiers créés',         arg: '--top/--all' }
+    'file-creates':    { desc: 'fichiers créés : chemin + binaire écrivain', arg: '--top/--all' }
     'kill-targets':    { desc: 'cibles tuées (kill)',                   arg: '--top/--all' }
     'prctl-options':   { desc: 'options prctl par processus',           arg: '--top/--all' }
     'file-renames':    { desc: 'renommages old->new (file_rename)',     arg: '--top/--all' }
@@ -738,7 +770,7 @@ def "main help" [] {
 #  - un chemin de fichier passé seul -> requête par défaut `events`,
 #  - sinon -> requête inconnue.
 def main [
-    query: string        # type de requête : events | dns | command-lines | exes | connect-ips | connect-ports | network | dst-ports | file-extensions | kill-targets | prctl-options | file-renames | file-unlinks | mmap-execs | bpf-progs | send-ports | send-ips | help
+    query: string        # type de requête : events | dns | command-lines | exes | connect-ips | connect-ports | network | dst-ports | file-extensions | file-creates | kill-targets | prctl-options | file-renames | file-unlinks | mmap-execs | bpf-progs | send-ports | send-ips | help
 ] {
     if $query == '-h' or $query == '--help' {
         print_help
