@@ -745,6 +745,42 @@ def "main send-ports" [
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun send_data dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
 }
 
+# Top IPs de destination du send_data (dst_ip après dépliage de dst).
+def "main send-ips" [
+    file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --top: int = 10       # nombre de lignes
+    --all (-a)            # toutes les lignes
+    --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
+] {
+    if not (require_file $file) { return }
+    let base = (events_frame $file $infer_schema 'send_data')
+    let base = (unnestif $base 'dst')
+    let cols = ($base | polars schema | columns)
+    if 'dst_ip' not-in $cols {
+        print $"(ansi yellow)✗ aucune colonne dst_ip pour send_data sur ce format(ansi reset)"
+        return
+    }
+    let all_rows = ($base
+        | polars select dst_ip
+        | polars drop-nulls
+        | polars get dst_ip
+        | polars value-counts
+        | polars sort-by [count dst_ip] -r [true false]
+        | polars collect
+        | polars into-nu)
+    if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun send_data dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
+}
+
+# Appel direct `send-ips` (après `source kunai_queries.nu`), alias de `main send-ips`.
+def send-ips [
+    file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --top: int = 10       # nombre de lignes
+    --all (-a)            # toutes les lignes
+    --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
+] {
+    main send-ips $file --top=$top --all=$all --infer-schema=$infer_schema
+}
+
 # Extraction consolidée des IOC (indicateurs de compromission), équivalent nushell
 # de `view_iocs` des scripts kunai officiels. Regroupe en une seule vue les
 # indicateurs portés par les événements à fort signal :
