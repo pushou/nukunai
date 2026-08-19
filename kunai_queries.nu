@@ -191,19 +191,21 @@ def is_public_ip [ip: string] {
 # ------------------------------------------------ requêtes (sous-commandes)
 
 # Lien type d'événement kunai -> sous-requête de traitement (affiché par events).
+# `iocs` est la vue consolidée des IOC ; son option --public ne porte que sur
+# l'égression réseau (connect/send_data), d'où l'annotation sur ces lignes.
 const EVENT_QUERY = {
-    execve:        'command-lines / exes'
-    execve_script: 'command-lines / exes'
-    connect:       'connect-ips / connect-ports / network / dst-ports'
-    send_data:     'send-ips / send-ports'
-    dns_query:     'dns'
+    execve:        'command-lines / exes / iocs'
+    execve_script: 'command-lines / exes / iocs'
+    connect:       'connect-ips / connect-ports / network / dst-ports / iocs (--public)'
+    send_data:     'send-ips / send-ports / iocs (--public)'
+    dns_query:     'dns / iocs'
     file_create:   'file-extensions / file-creates'
     kill:          'kill-targets'
     prctl:         'prctl-options'
     file_rename:   'file-renames'
     file_unlink:   'file-unlinks'
-    mmap_exec:     'mmap-execs (--mprotect)'
-    mprotect_exec: 'mmap-execs (--mprotect)'
+    mmap_exec:     'mmap-execs (--mprotect) / iocs'
+    mprotect_exec: 'mmap-execs (--mprotect) / iocs'
     bpf_prog_load: 'bpf-progs'
 }
 
@@ -773,7 +775,7 @@ def "main iocs" [
     let evcol = (event_name_col $base)
 
     # colonnes à sélectionner par branche (évite de référencer une colonne absente).
-    let net_keep = (['ancestors' 'dst'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
+    let net_keep = (['ancestors' 'dst' 'src'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
     let dns_keep = (['query' 'response' 'ancestors'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
     let exe_keep = (['ancestors' $evcol] | append (if $bin_col != '' { [$bin_col] } else { [] }))
 
@@ -781,7 +783,8 @@ def "main iocs" [
     let netsrc = ($base
         | polars filter (((polars col $evcol) == 'connect') or ((polars col $evcol) == 'send_data'))
         | polars select $net_keep
-        | polars unnest dst -s "_")
+        | polars unnest dst -s "_"
+        | polars unnest src -s "_")
     let netcols = ($netsrc | polars schema | columns)
     let net = (if ('dst_ip' in $netcols) {
         ($netsrc
@@ -792,7 +795,8 @@ def "main iocs" [
                 {
                     type: (if $ev == 'connect' { 'egress-ip' } else { 'send-ip' })
                     indicator: ($r.dst_ip | into string)
-                    port: ($r.dst_port | default '' | into string)
+                    dest_port: ($r.dst_port | default '' | into string)
+                    src_port: ($r.src_port | default '' | into string)
                     binary: (if $bin_col != '' { $r | get $bin_col | default '' } else { '' })
                     ancestors: ($r.ancestors | default '' | into string)
                 }
@@ -817,7 +821,8 @@ def "main iocs" [
                 {
                     type: 'dns'
                     indicator: ($r.query | default '' | into string)
-                    port: ($r.response | default '' | into string)
+                    dest_port: ($r.response | default '' | into string)
+                    src_port: ''
                     binary: (if $bin_col != '' { $r | get $bin_col | default '' } else { '' })
                     ancestors: ($r.ancestors | default '' | into string)
                 }
@@ -838,7 +843,8 @@ def "main iocs" [
                 {
                     type: (if (($r | get $evcol | default '') == 'execve') { 'execve' } else { 'mmap-exec' })
                     indicator: ($r | get $bin_col | default '' | into string)
-                    port: ''
+                    dest_port: ''
+                    src_port: ''
                     binary: ($r | get $bin_col | default '' | into string)
                     ancestors: ($r.ancestors | default '' | into string)
                 }
@@ -855,17 +861,41 @@ def "main iocs" [
 
     # Agrège les lignes par (type, indicateur) pour sortir des uniques : ports et
     # binaires responsables concaténés, ancêtres les plus fréquents en tête.
+    # Colonne `ports` = ports de DESTINATION (dst.port pour connect/send_data, réponse
+    # DNS pour dns). Pour le réseau on trie numériquement (ports de service en tête) et
+    # on borne l'affichage aux 6 premiers (+N autres) : les ports éphémères (>= 32768)
+    # qui apparaissent côté dst portraitement d'un send_data serveur (source locale =
+    # service, pair distant éphémère) ne doivent pas noyer les vrais ports de service.
+    let sep = ' '
     let agg = ($rows
         | group-by {|r| $"($r.type)|($r.indicator)" }
         | items {|k, v|
             let parts = ($k | split row '|')
-            let ports = ($v.port | where {|p| ($p | is-not-empty) and $p != '' } | uniq | str join '; ')
-            let bins  = ($v.binary | where {|b| ($b | is-not-empty) and $b != '' } | uniq | str join '; ')
+            let mkports = {|clist|
+                let clean = ($clist
+                    | each {|p| if $p == null { '' } else { $p | into string } }
+                    | where {|p| ($p | is-not-empty) and $p != '' }
+                    | uniq)
+                if ($parts.0 == 'send-ip' or $parts.0 == 'egress-ip') {
+                    let sorted = ($clean
+                        | each {|p| { n: (if ($p =~ '^\d+$') { $p | into int } else { 999999 }), s: $p } }
+                        | sort-by n | get s)
+                    if (($sorted | length) > 6) {
+                        let vis = ($sorted | first 6 | str join $sep)
+                        let hidden = (($sorted | length) - 6)
+                        $"(ansi green)($vis)(ansi reset) (ansi dark_gray)+($hidden) autres(ansi reset)"
+                    } else { $sorted | str join $sep }
+                } else { $clean | str join $sep }
+            }
+            let ports    = (do $mkports $v.dest_port)
+            let srcports = (do $mkports $v.src_port)
+            let bins  = ($v.binary | where {|b| ($b | is-not-empty) and $b != '' } | uniq | str join ' ')
             {
                 type: ($parts.0)
                 indicator: ($parts.1)
                 count: ($v | length)
                 ports: $ports
+                src_ports: $srcports
                 binary: $bins
                 ancestors: ($v.ancestors
                     | where {|a| ($a | is-not-empty) and $a != '' }
