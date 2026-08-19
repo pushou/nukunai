@@ -863,9 +863,10 @@ def "main iocs" [
     # binaires responsables concaténés, ancêtres les plus fréquents en tête.
     # Colonne `ports` = ports de DESTINATION (dst.port pour connect/send_data, réponse
     # DNS pour dns). Pour le réseau on trie numériquement (ports de service en tête) et
-    # on borne l'affichage aux 6 premiers (+N autres) : les ports éphémères (>= 32768)
-    # qui apparaissent côté dst portraitement d'un send_data serveur (source locale =
-    # service, pair distant éphémère) ne doivent pas noyer les vrais ports de service.
+    # on borne l'affichage aux 4 premiers (+N autres, tout avec --all) : les ports
+    # éphémères (>= 32768) qui apparaissent côté dst portraitement d'un send_data
+    # serveur (source locale = service, pair distant éphémère) ne doivent pas noyer
+    # les vrais ports de service.
     let sep = ' '
     let agg = ($rows
         | group-by {|r| $"($r.type)|($r.indicator)" }
@@ -880,9 +881,9 @@ def "main iocs" [
                     let sorted = ($clean
                         | each {|p| { n: (if ($p =~ '^\d+$') { $p | into int } else { 999999 }), s: $p } }
                         | sort-by n | get s)
-                    if (($sorted | length) > 6) {
-                        let vis = ($sorted | first 6 | str join $sep)
-                        let hidden = (($sorted | length) - 6)
+                    if ((not $all) and (($sorted | length) > 4)) {
+                        let vis = ($sorted | first 4 | str join $sep)
+                        let hidden = (($sorted | length) - 4)
                         $"(ansi green)($vis)(ansi reset) (ansi dark_gray)+($hidden) autres(ansi reset)"
                     } else { $sorted | str join $sep }
                 } else { $clean | str join $sep }
@@ -909,6 +910,18 @@ def "main iocs" [
         })
     let agg = ($agg | sort-by type count -r)
     if $all { $agg } else { $agg | first $top }
+}
+
+# Appel direct `iocs` (après `source kunai_queries.nu`), alias de `main iocs` :
+# pratique pour pipe vers `explore` depuis le REPL nushell.
+def iocs [
+    file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    --public (-p)         # ne garder que les IP réellement publiques (egress)
+    --top: int = 30       # nombre de lignes
+    --all (-a)            # toutes les lignes (et tous les ports, pas de borne)
+    --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
+] {
+    main iocs $file --public=$public --top=$top --all=$all --infer-schema=$infer_schema
 }
 
 
