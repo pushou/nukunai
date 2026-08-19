@@ -2,6 +2,7 @@
 nushell polars scripts to analyse/filter kunai logs (jsonl to parquet file).
 
 <img src="images/explore.gif" width="150%" >
+<img src="images/detect.gif" width="150%" >
 
 ## requirements 
 Nushell and its blazing fast polars plugins, kunai logs (install kunai (https://github.com/kunai-project/) or see ngsoti malware dataset)
