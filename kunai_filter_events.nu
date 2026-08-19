@@ -8,12 +8,12 @@
  # kunai events log file <string>
  # kunai event id <int> id=0 => no filter
 
-# Ouvre la source directement :
-#  - .parquet : polars open (déjà aplati),
-#  - .gz / ndjson : lecteur ndjson (polars décompresse les .gz nativement),
-#    avec unnest de data/info pour exposer la colonne event comme le parquet.
-# Retourne TOUJOURS un eager dataframe (polars collect) pour que le type soit
-# concret en aval et que les renames conditionnels fonctionnent.
+# Opens the source directly:
+#  - .parquet: polars open (already flattened),
+#  - .gz / ndjson: ndjson reader (polars decompresses .gz natively),
+#    with unnest of data/info to expose the event column like the parquet.
+# ALWAYS returns an eager dataframe (polars collect) so the type is
+# concrete downstream and conditional renames work.
 def open_source [
     kunai_events_log_file: string
     infer_schema: int ] {
@@ -28,7 +28,7 @@ def open_source [
 }
 
 def filter_events [
-    frame                       # polars frame (lazy ou eager) de la source
+    frame                       # polars frame (lazy or eager) of the source
     events_id: string ] {
     print $"filter event_id: ($events_id)"
     let events_list = ($events_id|split row ","|each {$in|into int})
@@ -37,11 +37,11 @@ def filter_events [
     let f = if "name" in $cols { $f | polars rename name main_name } else { $f }
     $f | polars unnest event
        | polars rename [source id name uuid batch] [event_source event_id event_name event_uuid event_batch]
-       | polars with-column ((polars col event_id) 
+       | polars with-column ((polars col event_id)
        | polars is-in $events_list
-       | polars as match_id) 
-       | polars filter (polars col match_id) 
-       | polars drop match_id      
+       | polars as match_id)
+       | polars filter (polars col match_id)
+       | polars drop match_id
     }
 
 def exploring_fdf [
@@ -68,7 +68,7 @@ def main [
     --events_id (-e): string = "1" # event id to filter, default is 1 => execve
     --infer-schema:  int = 200000 # Number of rows to infer schema. under 200000 it failed
     --lazy # kept for backward compatibility (no-op: the source is always read eagerly)
-    --save (-s) # save filtered events in a parquet file and do not xplore dataframe
+    --save (-s) # save filtered events in a parquet file and do not explore dataframe
 ] {
     let save_param  = match $save {
         true => {true}
@@ -85,7 +85,7 @@ def main [
         print $"file must be parquet or gz";exit 0
     }
 
-    # lecture directe de la source (gz lus sans conversion parquet)
+# source read directly (gz read without parquet conversion)
     let frame = (open_source $kunai_events_log_file $infer_schema)
    
     if $save_param {save_filtered_parquet $frame $kunai_events_log_file $events_id } else {
