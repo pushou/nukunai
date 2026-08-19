@@ -85,12 +85,12 @@ cat  /var/log/kunai/events.log
    | get command_line
    | uniq 
    | split column " "
-   | get column1i
+   | get column1
    | uniq -c
 
 cat  /var/log/kunai/events.log
    | from json --objects
-   | filter {$in.info.event.name == "connect"}i
+   | filter {$in.info.event.name == "connect"}
    | flatten --all
    | select command_line socket src dst
    | flatten --all
@@ -128,8 +128,9 @@ cat  /var/log/kunai/events.log
    | sort-by -r count 
    | first 20
 
-def is-numeric []: string -> bool 
-     { $in like '^[+-]?\d+(\.\d*)?$' }
+def is-numeric []: string -> bool {
+     $in like '^[+-]?\d+(\.\d*)?$'
+}
 
 
 cat  /var/log/kunai/events.log
