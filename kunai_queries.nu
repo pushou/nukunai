@@ -145,6 +145,51 @@ def require_file [file: string] {
     } else { true }
 }
 
+# Registre des requêtes (sous-commandes) pour l'aide et la validation des arguments.
+# Défini ici (haut du fichier) car il est référencé par `check_args_pos` : en
+# nushell, une variable référencée dans un `def` doit exister AVANT la définition
+# de ce `def` (évaluation dans l'ordre au chargement).
+const REQUESTS = {
+    events:            { desc: 'count d évènements par nom',            arg: '' }
+    dns:               { desc: 'requêtes DNS groupées par query',       arg: '--top/--all' }
+    'command-lines':   { desc: 'command_line execve les plus fréquentes', arg: '--top/--all' }
+    exes:              { desc: 'palette dexecutables (1er mot command_line)', arg: '--top/--all' }
+    'connect-ips':     { desc: 'top dst_ip des connexions',             arg: '--top/--all' }
+    'connect-ports':   { desc: 'top dst_port des connexions',           arg: '--top/--all' }
+    network:           { desc: 'vue réseau command_line + dst connect', arg: '--filter "regex"' }
+    'dst-ports':       { desc: 'ports + ancestors uniques groupés par IP de destination', arg: '--top/--all' }
+    'file-extensions': { desc: 'extensions des fichiers créés',         arg: '--top/--all' }
+    'file-creates':    { desc: 'fichiers créés : chemin + binaire écrivain', arg: '--top/--all' }
+    'kill-targets':    { desc: 'cibles tuées (kill)',                   arg: '--top/--all' }
+    'prctl-options':   { desc: 'options prctl par processus',           arg: '--top/--all' }
+    'file-renames':    { desc: 'renommages old->new (file_rename)',     arg: '--top/--all' }
+    'file-unlinks':    { desc: 'fichiers supprimés (file_unlink)',      arg: '--top/--all' }
+    'mmap-execs':      { desc: 'fichiers mappés RX / drop-and-run',   arg: '--top/--all/--mprotect/-s' }
+    'bpf-progs':       { desc: 'programmes eBPF chargés (rootkit)',     arg: '--top/--all' }
+    'send-ports':      { desc: 'top ports du send_data',                arg: '--top/--all' }
+    'send-ips':        { desc: 'top IPs du send_data',                  arg: '--top/--all' }
+    iocs:              { desc: 'vue consolidée des IOC (egress / dns / execve)', arg: '--public/--top/--all' }
+}
+
+# Message clair quand des arguments positionnels inattendus suivent la requête
+# (l'erreur nushell native "Extra positional argument" est cryptique et ne dit pas
+# quoi faire). Chaque sous-commande n'accepte qu'UN positionnel `<file>` (avec défaut
+# '') ; tout surplus atterrit dans `rest`. Si le 1er positionnel (`file`) est lui-même
+# une autre requête connue, on signale qu'on n'imbrique pas deux requêtes.
+def check_args_pos [name: string, file: string, rest: list<string>] {
+    let is_req = ($file in ($REQUESTS | columns)) and ($file != $name)
+    if (($rest | length) > 0) or $is_req {
+        let extra = (([$file] | append $rest | where {|p| ($p | is-not-empty) }) | str join ' ')
+        let msg = ([
+            ($"(ansi red)✗ arguments positionnels inattendus après '($name)' : '($extra)'(ansi reset)")
+            '  Usage : nu kunai_queries.nu <requête> <file> [options]'
+            '  Le <file> kunai vient immédiatement après la requête, puis les options ; une seule requête par exécution.'
+            (if $is_req { $"\n  '($file)' est une AUTRE requête : on n'imbrique pas deux requêtes, une seule passe à la fois." } else { '' })
+        ] | where {|l| $l != '' } | str join "\n")
+        error make { msg: $msg }
+    }
+}
+
 # base commune : frame aplati (data/info/event_info) filtré sur le nom d'événement.
 # Retourne le lazy frame filtré (encore non collecté).
 def events_frame [file: string, infer_schema: int, evname: string] {
@@ -215,8 +260,10 @@ const EVENT_QUERY = {
 # Compte d'événements par nom (count_event_types).
 def "main events" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'events' $file $rest
     if not (require_file $file) { return }
     let base = (open_source $file $infer_schema)
     let ncol = (event_name_col $base)
@@ -245,10 +292,12 @@ def "main events" [
 # Requêtes DNS groupées par requête (événement dns_query), top-N ou toutes.
 def "main dns" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'dns' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'dns_query')
     let cols = ($base | polars schema | columns)
@@ -270,10 +319,12 @@ def "main dns" [
 # command_line des execve les plus fréquentes (view_command_lines).
 def "main command-lines" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'command-lines' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'execve')
     let cols = ($base | polars schema | columns)
@@ -295,10 +346,12 @@ def "main command-lines" [
 # Première colonne de chaque command_line execve (palette d'exécutables invoqués).
 def "main exes" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'exes' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'execve')
     let cols = ($base | polars schema | columns)
@@ -324,11 +377,13 @@ def "main exes" [
 # y compris les IPv4-mappées ::ffff:).
 def "main connect-ips" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'connect-ips' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'connect')
     let base = (unnestif $base 'dst')
@@ -352,21 +407,25 @@ def "main connect-ips" [
 # Appel direct `connect-ips` (après `source kunai_queries.nu`), alias de `main connect-ips`.
 def connect-ips [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'connect-ips' $file $rest
     main connect-ips $file --public=$public --top=$top --all=$all --infer-schema=$infer_schema
 }
 
 # Top dst_port des connexions.
 def "main connect-ports" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'connect-ports' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'connect')
     let base = (unnestif $base 'dst')
@@ -394,10 +453,12 @@ def "main connect-ports" [
 #   | group-by ip | agg (unique port) | collect
 def "main dst-ports" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 20       # nombre de lignes à afficher
     --all (-a)            # tout afficher (au lieu des --top premières)
     --infer-schema: int = 200000
 ] {
+    check_args_pos 'dst-ports' $file $rest
     if not (require_file $file) { return }
     let base = (open_source $file $infer_schema)
     let cols = ($base | polars schema | columns)
@@ -442,9 +503,11 @@ def "main dst-ports" [
 # (uniques des dst_ip / dst_port / dst_hostname / dst_public), filtrable sur command_line.
 def "main network" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --filter: string = ''  # regex sur command_line ; ex. --filter "ssh"
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'network' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'connect')
     let base = (unnestif $base 'dst')
@@ -475,11 +538,13 @@ def "main network" [
 # que les créations de fichiers qui ne tombent pas dans le bruit attendu.
 def "main file-creates" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 20       # nombre de lignes
     --all (-a)            # toutes les lignes
     --skip-benign (-b)    # masque les écrivains système/utilitaires bénins connus
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'file-creates' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'file_create')
     let cols = ($base | polars schema | columns)
@@ -533,10 +598,12 @@ def "main file-creates" [
 # Extensions des chemins créés (file_create / filter_write).
 def "main file-extensions" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'file-extensions' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'file_create')
     let cols = ($base | polars schema | columns)
@@ -561,10 +628,12 @@ def "main file-extensions" [
 # Cibles tuées (kill / filter_kill) : colonne target* une fois déroulée par unnestif.
 def "main kill-targets" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'kill-targets' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'kill')
     let base = (unnestif $base 'target')
@@ -589,10 +658,12 @@ def "main kill-targets" [
 # QUI appelle QUEL prctl (durcissement PR_SET_*, lecture PR_CAPBSET_READ…).
 def "main prctl-options" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'prctl-options' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'prctl')
     let cols = ($base | polars schema | columns)
@@ -615,10 +686,12 @@ def "main prctl-options" [
 # Renommages (file_rename) : paires (task_name, old, new) les plus fréquentes.
 def "main file-renames" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'file-renames' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'file_rename')
     let cols = ($base | polars schema | columns)
@@ -641,10 +714,12 @@ def "main file-renames" [
 # Suppressions de fichiers (file_unlink) : chemins les plus supprimés.
 def "main file-unlinks" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'file-unlinks' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'file_unlink')
     let cols = ($base | polars schema | columns)
@@ -670,12 +745,14 @@ def "main file-unlinks" [
 # (drop-and-run, cf. r_mmapexec_from_tmp du moteur). --suspicious filtre dessus.
 def "main mmap-execs" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --mprotect            # inclure aussi mprotect_exec
     --suspicious (-s)     # ne garder que mapped_path temporaire (tmp/fd/memfd)
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'mmap-execs' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'mmap_exec')
     let cols = ($base | polars schema | columns)
@@ -712,10 +789,12 @@ def "main mmap-execs" [
 # La colonne nested prog_type est déroulée par unnest (prog_type_name).
 def "main bpf-progs" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'bpf-progs' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'bpf_prog_load')
     let cols = ($base | polars schema | columns)
@@ -740,10 +819,12 @@ def "main bpf-progs" [
 # Top ports du send_data (filter_send).
 def "main send-ports" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'send-ports' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'send_data')
     let base = (unnestif $base 'dst')
@@ -768,11 +849,13 @@ def "main send-ports" [
 # réseaux Docker internes, y compris les IPv4-mappées ::ffff:).
 def "main send-ips" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'send-ips' $file $rest
     if not (require_file $file) { return }
     let base = (events_frame $file $infer_schema 'send_data')
     let base = (unnestif $base 'dst')
@@ -796,11 +879,13 @@ def "main send-ips" [
 # Appel direct `send-ips` (après `source kunai_queries.nu`), alias de `main send-ips`.
 def send-ips [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --public (-p)         # ne garder que les IP réellement publiques
     --top: int = 10       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'send-ips' $file $rest
     main send-ips $file --public=$public --top=$top --all=$all --infer-schema=$infer_schema
 }
 
@@ -815,11 +900,13 @@ def send-ips [
 # plages privées/mappées, cf. dst_public peu fiable en IPv4-mappée).
 def "main iocs" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --public (-p)         # ne garder que les IP réellement publiques (egress)
     --top: int = 30       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'iocs' $file $rest
     if not (require_file $file) { return }
     let base = (open_source $file $infer_schema)
 
@@ -978,38 +1065,18 @@ def "main iocs" [
 # pratique pour pipe vers `explore` depuis le REPL nushell.
 def iocs [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
+    ...rest: string       # surplus d'arguments positionnels -> message clair
     --public (-p)         # ne garder que les IP réellement publiques (egress)
     --top: int = 30       # nombre de lignes
     --all (-a)            # toutes les lignes (et tous les ports, pas de borne)
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
+    check_args_pos 'iocs' $file $rest
     main iocs $file --public=$public --top=$top --all=$all --infer-schema=$infer_schema
 }
 
 
 # ---------------------------------------------------------------- CLI
-
-const REQUESTS = {
-    events:            { desc: 'count d évènements par nom',            arg: '' }
-    dns:               { desc: 'requêtes DNS groupées par query',       arg: '--top/--all' }
-    'command-lines':   { desc: 'command_line execve les plus fréquentes', arg: '--top/--all' }
-    exes:              { desc: 'palette dexecutables (1er mot command_line)', arg: '--top/--all' }
-    'connect-ips':     { desc: 'top dst_ip des connexions',             arg: '--top/--all' }
-    'connect-ports':   { desc: 'top dst_port des connexions',           arg: '--top/--all' }
-    network:           { desc: 'vue réseau command_line + dst connect', arg: '--filter "regex"' }
-    'dst-ports':       { desc: 'ports + ancestors uniques groupés par IP de destination', arg: '--top/--all' }
-    'file-extensions': { desc: 'extensions des fichiers créés',         arg: '--top/--all' }
-    'file-creates':    { desc: 'fichiers créés : chemin + binaire écrivain', arg: '--top/--all' }
-    'kill-targets':    { desc: 'cibles tuées (kill)',                   arg: '--top/--all' }
-    'prctl-options':   { desc: 'options prctl par processus',           arg: '--top/--all' }
-    'file-renames':    { desc: 'renommages old->new (file_rename)',     arg: '--top/--all' }
-    'file-unlinks':    { desc: 'fichiers supprimés (file_unlink)',      arg: '--top/--all' }
-    'mmap-execs':      { desc: 'fichiers mappés RX / drop-and-run',   arg: '--top/--all/--mprotect/-s' }
-    'bpf-progs':       { desc: 'programmes eBPF chargés (rootkit)',     arg: '--top/--all' }
-    'send-ports':      { desc: 'top ports du send_data',                arg: '--top/--all' }
-    'send-ips':        { desc: 'top IPs du send_data',                  arg: '--top/--all' }
-    iocs:              { desc: 'vue consolidée des IOC (egress / dns / execve)', arg: '--public/--top/--all' }
-}
 
 def print_help [] {
     print $"(ansi cyan)kunai_queries.nu — requêtes ad-hoc sur logs kunai(ansi reset)"
