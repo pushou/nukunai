@@ -1,65 +1,65 @@
 #!/usr/bin/env nu
 # kunai_local_cfg.nu
 #
-# CONFIG LOCALE PARAMÉTRABLE — middleware de sélection des allowlists.
+# PARAMETRIZABLE LOCAL CONFIG — middleware for allowlist selection.
 #
-# C'est LE fichier de données qui rend `kunai_rules_local.nu` paramétrable.
-# Il contient :
-#   1. un socle `default` GÉNÉRIQUE (commun à toutes les plateformes, strict) ;
-#   2. des `function_profiles` PAR FONCTION (thématiques d'allowlist), combina­bles.
+# This is THE data file that makes `kunai_rules_local.nu` parametrizable.
+# It contains:
+#   1. a generic `default` BASE (common to all platforms, strict);
+#   2. `function_profiles` PER FUNCTION (allowlist themes), combinable.
 #
-# Les profils ne sont PAS par machine : ils sont par FONCTION (thém­atique) —
-#   dns / network / docker / elk / kube — et peuvent être activés indépendamment.
-# Le profil `all` les prend TOUS et est le choix par défaut. On peut restreindre
-# en passant une LISTE de fonctions, ex. --profile "dns,network" pour ne détecter
-# qu'avec les allowlists DNS + réseau (sans docker/elk/kube).
+# The profiles are NOT per machine: they are per FUNCTION (theme) —
+#   dns / network / docker / elk / kube — and can be activated independently.
+# The `all` profile takes them ALL and is the default choice. You can restrict
+# by passing a LIST of functions, e.g. --profile "dns,network" to detect
+# only with the DNS + network allowlists (without docker/elk/kube).
 #
-# Le moteur (kunai_detect_compromise.nu) / l'interface (kunai_rules_local.nu)
-# continuent d'appeler `local_cfg <nom_de_clé>`. La sélection des fonctions et la
-# fusion avec le socle se font ici, de façon transparente pour l'appelant.
+# The engine (kunai_detect_compromise.nu) / interface (kunai_rules_local.nu)
+# keep calling `local_cfg <key_name>`. Function selection and merging with the
+# base happen here, transparently for the caller.
 #
-# ── SÉLECTION DES PROFILS (priorité décroissante) ────────────────────────
-#   1. `local_cfg <clé> --profile "a,b"`   (liste CSV de fonctions / test)
-#   2. `$env.KUNAI_PROFILE`                (posé par le moteur depuis --profile)
-#   3. sinon → `all`                        (TOUTES les fonctions, par défaut)
-# Une valeur 'all' (ou vide) = socle + toutes les fonctions, dans l'ordre
-# canonique [dns, network, docker, elk, kube]. Une valeur a,b = socle + a + b.
+# ── PROFILE SELECTION (decreasing priority) ────────────────────────
+#   1. `local_cfg <key> --profile "a,b"`   (CSV list of functions / test)
+#   2. `$env.KUNAI_PROFILE`                (set by the engine from --profile)
+#   3. otherwise → `all`                        (ALL functions, by default)
+# A value 'all' (or empty) = base + all functions, in canonical
+# order [dns, network, docker, elk, kube]. A value a,b = base + a + b.
 #
-# ── FUSION SOCLE + FONCTIONS ─────────────────────────────────────────────
-# Chaque fonction ne touche QUE les clés de sa thém­atique (dns_ips / requêtes DNS
-# pour `dns`, réseaux docker pour `docker`, chemins ELK pour `elk`…). Pour une clé
-# partagée entre plusieurs fonctions, on utilise le marqueur '__append__' pour
-# CONCAT (dédupliqué) dans l'ordre des fonctions actives ; sans marqueur, la liste
-# REMPLACE le socle. Toutes les valeurs sont des LISTES (la plus petite est
-# allowlist_egress_ports qui reste une liste d'INT : [443, 80, 53]).
+# ── BASE + FUNCTIONS MERGING ─────────────────────────────────────────────
+# Each function touches ONLY the keys of its theme (dns_ips / DNS queries
+# for `dns`, docker networks for `docker`, ELK paths for `elk`…). For a key
+# shared between several functions, use the '__append__' marker to
+# CONCAT (deduplicated) in the order of the active functions; without the
+# marker, the list REPLACES the base. All values are LISTS (the smallest is
+# allowlist_egress_ports which stays an INT list: [443, 80, 53]).
 #
-# ── CONVENTION des préfixes IP ───────────────────────────────────────────
-# `allowlist_public_networks` est comparé au PRÉFIXE EXACT de dst_ip (via
-# starts_with_any du moteur). Or kunai rend selon le contexte :
-#   * IP "nues"        :  34.120.127.130   (Internet, IPv4)
-#   * IP IPv4-mappées  :  ::ffff:172.19.0.8  (réseaux docker/privés résolus en
-#                         IPv6-mapping par la pile du conteneur)
-# Donc pour couvrir un réseau privé vu en ::ffff:, le préfixe DOIT inclure le
-# préfixe `::ffff:` (ex. '::ffff:172.16.'), sinon le match échoue silencieusement.
-# C'est la principale cause du bruit du rapport tpot : dst_public=true est posé
-# par kunai sans savoir que ::ffff:172.19.x est un réseau docker privé.
+# ── IP PREFIX CONVENTION ───────────────────────────────────────────
+# `allowlist_public_networks` is compared to the EXACT dst_ip PREFIX (via
+# the engine's starts_with_any). But kunai renders depending on context:
+#   * "bare" IPs        :  34.120.127.130   (Internet, IPv4)
+#   * IPv4-mapped IPs  :  ::ffff:172.19.0.8  (docker/private networks resolved
+#                         over IPv6-mapping by the container stack)
+# So to cover a private network seen as ::ffff:, the prefix MUST include the
+# `::ffff:` prefix (e.g. '::ffff:172.16.'), otherwise the match fails silently.
+# This is the main cause of the tpot report noise: dst_public=true is set
+# by kunai without knowing that ::ffff:172.19.x is a private docker network.
 #
-# ── AJOUTER UNE MACHINE ──────────────────────────────────────────────────
-# Copier un bloc `"<hostname>": { ... }` sous `profiles`, y mettre SEULEMENT les
-# clés qui changent par rapport au socle (les autres héritent de `default`).
-# Utiliser '__append__' pour étendre une allowlist au lieu de la réécrire.
+# ── ADDING A MACHINE ──────────────────────────────────────────────────
+# Copy a `"<hostname>": { ... }` block under `profiles`, put ONLY the
+# keys that change versus the base (the others inherit from `default`).
+# Use '__append__' to extend an allowlist instead of rewriting it.
 
-# Socle générique — commun à toutes les machines analysées. STRICT : il ne
-# contient QUE ce qui est vrai sur toutes les plateformes (dépôts/CDN/miroirs
-# publics, agents et utilitaires d'usage universel). Tout le reste (réseaux
-# docker, IP de labo, services ELK, résolveur DNS embarqué…) est du CONTEXTE
-# LOCAL => à placer dans un `profile` dédié, jamais ici.
+# Generic base — common to all analyzed machines. STRICT: it contains
+# ONLY what is true on all platforms (repos/CDN/public mirrors, agents and
+# universally used utilities). Everything else (docker networks, lab IPs,
+# ELK services, embedded DNS resolver…) is LOCAL CONTEXT
+# => put it in a dedicated `profile`, never here.
 def default_defs [] {
     {
-        # vrais agents / services de la plateforme à retirer du bruit définitivement.
-        # On N'y met PAS les outils détournables (docker, chmod, chown, tar, cp...),
-        # qui ne doivent être bénins QUE quand ils proviennent d'une chaîne légitime
-        # (voir benign_utilities + not_legit dans le moteur).
+        # real agents / platform services to permanently remove from the noise.
+        # We do NOT put the hijackable tools (docker, chmod, chown, tar, cp...),
+        # which must only be benign when they come from a legitimate chain
+        # (see benign_utilities + not_legit in the engine).
         legit_agents: ['dpkg','dpkg-deb','dpkg-db-backup','dpkg-trigger','apt','apt-get','apt-cache','apt-key',
                        'gitlab-runner','gitlab-workhorse','gitlab-shell','git','dockerd',
                        'containerd','containerd-shim','containerd-shim-runc-v2','runc',
@@ -72,8 +72,8 @@ def default_defs [] {
                        'cron','crond','dbus-daemon','polkitd','NetworkManager','unattended-upgrade',
                        'chronyd','chrony','systemd-timesyn','systemd-timesyncd',
                        'auditd','auditctl','auditd-manager','augenrules','aureport','ausearch'],
-        # utilitaires banals / commandes système standard. Bénins UNIQUEMENT quand ils
-        # proviennent d'une chaîne légitime (voir not_legit).
+        # mundane utilities / standard system commands. Benign ONLY when they
+        # come from a legitimate chain (see not_legit).
         benign_utilities: ['docker','grep','sed','cat','tar','gzip','bzip2','xz','gpg','gpgv','gpgconf',
                            'sh','bash','curl','wget','chmod','chown','install','cp','mv','rm',
                            'cmp','mktemp','rmdir','touch','mkdir','ln','readlink','basename',
@@ -85,13 +85,13 @@ def default_defs [] {
                            'ip6tables','nft','findmnt','sysctl','unix_chkpwd','crontab','login',
                            'systemd-timesyn','sshd-session','sftp-server','su','gpg-agent','loginctl',
                            'udevadm','vim','view','sed','nano','fuser','sudo'],
-        # résolveurs DNS LÉGITIMES : le bruit `non_standard_dns_server` diminue si
-        # le serveur DNS interrogé est ici. (le résolveur Docker embarqué 127.0.0.11
-        # et les IP de labo sont du contexte local => profile)
+        # LEGITIMATE DNS resolvers: the `non_standard_dns_server` noise drops if
+        # the queried DNS server is here. (the embedded Docker resolver 127.0.0.11
+        # and lab IPs are local context => profile)
         dns_ips: ['10.6.255.106'],
-        # ALLOWLIST réseau EGRESS : destinations PUBLIQUES réputées connues/bénignes.
-        # Une connexion sortante vers l'une de ces IP (préfixe) N'est PAS un
-        # "public_egress" suspect : dépôts/CDN/miroirs légitimes du serveur.
+        # EGRESS network ALLOWLIST: known/reputed BENIGN PUBLIC destinations.
+        # An outgoing connection to one of these IPs (prefix) is NOT a
+        # suspicious "public_egress": legitimate repos/CDN/mirrors of the server.
         allowlist_public_networks: [
             '151.101.', '151.101',             # crates.io / static.rust-lang.org (Fastly)
             '140.82.', '185.199.',             # GitHub
@@ -108,96 +108,96 @@ def default_defs [] {
             '172.67.', '104.21.',              # Cloudflare (apt Debian deb.debian.org)
             '10.6.',                           # NTP/paquets/miroirs locaux
         ],
-        # Ports de service vers lesquels un "public_egress"/"send_data" N'est PAS
-        # suspect quand la destination est déjà allowlistée (443 https, 80 http,
-        # 53 dns, 123 ntp). 123 = synchro NTP système (chronyd/ntpd) vers le pool
-        # public : protocole standard, silencieux sous analyse de flux IP/port.
+        # Service ports towards which a "public_egress"/"send_data" is NOT
+        # suspicious when the destination is already allowlisted (443 https, 80 http,
+        # 53 dns, 123 ntp). 123 = system NTP sync (chronyd/ntpd) to the public
+        # pool: standard protocol, silent under IP/port flow analysis.
         allowlist_egress_ports: [443, 80, 53, 123],
-        # Processus (task_name) dont l'activité réseau sortante est légitime.
-        # NB : ne filtre QUE par task_name exact. Pour du trafic dont le task_name
-        # est instable ou trop générique (threads ELK "elastic..][T#3]",
-        # "[http_output]>w", node/libuv-worker"), il faut corréler le CHEMIN de la
-        # command_line => utiliser `allowlist_egress_paths` (contexte local).
+        # Processes (task_name) whose outgoing network activity is legitimate.
+        # NB: only filters by exact task_name. For traffic whose task_name
+        # is unstable or too generic (ELK threads "elastic..][T#3]",
+        # "[http_output]>w", node/libuv-worker"), you must correlate the
+        # command_line PATH => use `allowlist_egress_paths` (local context).
         allowlist_egress_procs: ['rustup','rustup-init','cargo','git','git-remote-http',
                                  'git-remote-https','docker','docker-buildx','dockerd',
                                  'containerd','apt','apt-get','dpkg','wget','curl',
                                  'ssl_client','wazuh-agentd',
-                                 'https'],   # transport TLS d'apt (/usr/lib/apt/methods/https)
-        # NOUVEAU — chemins de la command_line (match sous-chaîne via contains_any)
-        # dont l'activité réseau sortante est légitime. Permet d'allowlister des
-        # binaires à task_name instable (threads de services, runtimes) par leur VRAI
-        # chemin sur disque. Vide par défaut (comportement inchangé) => à remplir
-        # dans les profils (ex. /usr/share/elasticsearch, /usr/share/kibana, logstash).
+                                 'https'],   # apt TLS transport (/usr/lib/apt/methods/https)
+        # NEW — command_line paths (substring match via contains_any)
+        # whose outgoing network activity is legitimate. Allows allowlisting
+        # binaries with an unstable task_name (service threads, runtimes) by their
+        # REAL path on disk. Empty by default (unchanged behavior) => to fill
+        # in the profiles (e.g. /usr/share/elasticsearch, /usr/share/kibana, logstash).
         allowlist_egress_paths: [],
-        # NOUVEAU — requêtes DNS bénignes (query, match sous-chaîne) à ne pas signaler
-        # comme `non_standard_dns_server`/`suspicious_*`. Vide par défaut => à remplir
-        # dans les profils (ex. epr.elastic.co, infra-cdn.elastic.co, nom de service
-        # K8s/docker "elasticsearch" résolu par libuv).
-        # `pool.ntp.org` = résolution du pool NTP système (chronyd/ntpd) : synchro
-        # horaire bénigne (même logique que le port 123 à l'egress) — le résolveur
-        # local peut varier (10.0.2.3 QEMU/VBox, 10.6.x, loopback Docker), donc on
-        # neutralise par la FORME de la requête, pas par l'IP du résolveur.
+        # NEW — benign DNS queries (query, substring match) not to report
+        # as `non_standard_dns_server`/`suspicious_*`. Empty by default => to fill
+        # in the profiles (e.g. epr.elastic.co, infra-cdn.elastic.co, K8s/docker
+        # service name "elasticsearch" resolved by libuv).
+        # `pool.ntp.org` = resolution of the system NTP pool (chronyd/ntpd): benign
+        # time sync (same logic as port 123 at egress) — the local resolver can
+        # vary (10.0.2.3 QEMU/VBox, 10.6.x, Docker loopback), so we neutralize by
+        # the QUERY SHAPE, not by the resolver IP.
         allowlist_dns_queries: ['pool.ntp.org'],
-        # chaîne build Rust (client lourd ~/.cargo, ~/.rustup) : exécution depuis
-        # /tmp/cargo-*, /tmp/rustc* ou ~/.cargo est BÉNIGNE.
+        # Rust build chain (heavy client ~/.cargo, ~/.rustup): execution from
+        # /tmp/cargo-*, /tmp/rustc* or ~/.cargo is BENIGN.
         allowlist_build_procs: ['rustup','rustup-init','cargo','rustc','rustdoc',
                                 'cc','cc1','cc1plus','cc1obj','cc1objplus','as','as1',
                                 'ar','ranlib','llvm-ar','llvm-ranlib','nm',
                                 'collect2','ld.lld','rust-lld','cargo-git-checkout',
                                 'clippy-driver','cargo-clippy','cargo-build',
                                 'CloseHandle'],
-        # chemins de compilation / cache légitimes de la chaîne build.
+        # legitimate compilation / cache paths of the build chain.
         allowlist_build_paths: [
             '/tmp/cargo-', '/tmp/rustc', '/tmp/tmp.', '/tmp/cargo-install',
             '/tmp/cc', '/tmp/as',
             '/home/nushell/.cargo/', '/home/nushell/.rustup/',
             '/root/.cargo/', '/root/.rustup/',
         ],
-        # signaux BÉNINS de gestion de processus / runtime (jamais un kill suspect).
+        # BENIGN process/runtime management signals (never a suspicious kill).
         benign_signals: ['SIGURG','SIGCHLD','SIGCONT','SIGWINCH','SIGIO','SIGPIPE'],
-        # chaîne build INITRAMFS (mkinitramfs/dracut/update-initramfs) : staging
-        # temporaire /var/tmp/mkinitramfs_* / /usr/lib/dracut réservé à mkinitramfs.
+        # INITRAMFS build chain (mkinitramfs/dracut/update-initramfs): staging
+        # temporary /var/tmp/mkinitramfs_* / /usr/lib/dracut reserved for mkinitramfs.
         allowlist_initramfs_paths: ['/var/tmp/mkinitramfs','/usr/lib/dracut'],
     }
 }
 
-# Profils PAR FONCTION (thématiques d'allowlist), combina­bles et INDÉPENDANTS.
-# Chaque fonction ne touche QUE les clés de sa thém­atique. Une clé partagée entre
-# plusieurs fonctions utilise '__append__' en tête = concat (dédupliqué) dans
-# l'ordre des fonctions actives ; sans marqueur, la liste remplace le socle.
+# PER-FUNCTION profiles (allowlist themes), combinable and INDEPENDENT.
+# Each function touches ONLY the keys of its theme. A key shared between
+# several functions uses '__append__' at the top = concat (deduplicated) in
+# the order of the active functions; without the marker, the list replaces the base.
 #
-# Le profil `all` (DÉFAUT) = socle + TOUTES les fonctions ci-dessous, dans l'ordre
-# canonique : dns, network, docker, elk, kube. Pour n'activer que certaines
-# fonctions : --profile "dns,network" (le socle reste toujours appliqué).
+# The `all` profile (DEFAULT) = base + ALL the functions below, in canonical
+# order: dns, network, docker, elk, kube. To activate only some
+# functions: --profile "dns,network" (the base is always applied).
 #
-# ── Ajouter une fonction ──────────────────────────────────────────────────
-# Ajouter un bloc `"<nom>": { ... }` ici puis l'insérer dans l'ordre canonique
-# `fn_order` (voir plus bas). Mettre expressément '__append__' pour étendre une
-# clé déjà fournie par une autre fonction, sinon elle est remplacée.
+# ── Adding a function ──────────────────────────────────────────────────
+# Add a `"<name>": { ... }` block here then insert it in the canonical order
+# `fn_order` (see below). Explicitly put '__append__' to extend a
+# key already provided by another function, otherwise it is replaced.
 def function_profiles [] {
     {
-        # ── dns : résolveurs DNS et requêtes DNS légitimes ──────────────────
-        # Neutralise `non_standard_dns_server` quand le serveur interrogé est le
-        # résolveur Docker embarqué (127.0.0.11) ou le résolveur local (127.0.0.1),
-        # et neutralise les signaux DNS des requêtes internes (services container,
-        # epr.elastic.co / infra-cdn.elastic.co de la stack ELK).
+        # ── dns: legitimate DNS resolvers and DNS queries ──────────────────
+        # Neutralizes `non_standard_dns_server` when the queried server is the
+        # embedded Docker resolver (127.0.0.11) or the local resolver (127.0.0.1),
+        # and neutralizes the DNS signals of internal queries (container services,
+        # epr.elastic.co / infra-cdn.elastic.co of the ELK stack).
         dns: {
             dns_ips: ['__append__', '127.0.0.11', '127.0.0.1'],
             allowlist_dns_queries: ['__append__',
                                     'epr.elastic.co', 'infra-cdn.elastic.co',
                                     'elasticsearch'],
         },
-        # ── network : egress réseau légitime universel ──────────────────────
-        # Ports de service et transport TLS d'apt (déjà au socle, rappel explicite
-        # pour qui désactive le socle implicite — redondant mais inoffensif).
+        # ── network: universal legitimate network egress ──────────────────────
+        # Service ports and apt TLS transport (already in the base, explicit reminder
+        # for those who disable the implicit base — redundant but harmless).
         network: {
             allowlist_egress_ports: [443, 80, 53, 123],
             allowlist_egress_procs: ['https'],
         },
-        # ── docker : réseaux docker/hôte internes vus en ::ffff: ────────────
-        # Réseaux docker ELK (172.16-31./12), labo (10.6.), loopback local mappé
-        # (127.0.0.), OVH hôte tpot (51.89.) — trafic INTERNE, pas un public_egress.
-        # Inclut le résolveur Docker 127.0.0.11 (c.f. fonction dns aussi).
+        # ── docker: internal docker/host networks seen as ::ffff: ────────────
+        # ELK docker networks (172.16-31./12), lab (10.6.), mapped local loopback
+        # (127.0.0.), OVH tpot host (51.89.) — INTERNAL traffic, not a public_egress.
+        # Includes the Docker resolver 127.0.0.11 (see also the dns function).
         docker: {
             allowlist_public_networks: ['__append__',
                                         '::ffff:172.16.', '::ffff:172.17.', '::ffff:172.18.',
@@ -207,13 +207,13 @@ def function_profiles [] {
                                         '::ffff:172.28.', '::ffff:172.29.', '::ffff:172.30.',
                                         '::ffff:172.31.',
                                         '::ffff:10.6.', '::ffff:127.0.0.',
-                                        '::ffff:51.89.'],   # OVH hôte tpot
+                                        '::ffff:51.89.'],   # OVH tpot host
             dns_ips: ['__append__', '127.0.0.11'],
         },
-        # ── elk : stack Elasticsearch/Logstash/Kibana ───────────────────────
-        # Chemins des binaires ELK (task_name instable : threads Elasticsearch
-        # "elastic..][T#3]", Logstash "[http_output]>w", node/libuv-worker pour
-        # Kibana) corrélés sur la command_line, + CDN d'infra Elastic (34.120.).
+        # ── elk: Elasticsearch/Logstash/Kibana stack ───────────────────────
+        # Paths of the ELK binaries (unstable task_name: Elasticsearch threads
+        # "elastic..][T#3]", Logstash "[http_output]>w", node/libuv-worker for
+        # Kibana) correlated on the command_line, + Elastic infra CDN (34.120.).
         elk: {
             allowlist_egress_paths: ['/usr/share/elasticsearch/',
                                      '/usr/share/logstash/',
@@ -223,9 +223,9 @@ def function_profiles [] {
                                     'epr.elastic.co', 'infra-cdn.elastic.co',
                                     'elasticsearch'],
         },
-        # ── kube : (réservé) réseaux/services Kubernetes ────────────────────
-        # Ex. 10.96.0.0/12 (ClusterIP), 10.244.0.0/16 (CNI Flannel), noms de service
-        # '<svc>.<ns>.svc.*'. Vide par défaut ; à remplir selon la plateforme.
+        # ── kube: (reserved) Kubernetes networks/services ────────────────────
+        # E.g. 10.96.0.0/12 (ClusterIP), 10.244.0.0/16 (CNI Flannel), service names
+        # '<svc>.<ns>.svc.*'. Empty by default; to fill according to the platform.
         kube: {
         },
     }
@@ -235,10 +235,10 @@ def function_profiles [] {
 def fn_order [] { ['dns', 'network', 'docker', 'elk', 'kube'] }
 
 # =====================================================================
-# Logique de fusion et de sélection — NE PAS MODIFIER
+# Merging and selection logic — DO NOT MODIFY
 # =====================================================================
 
-# concat $base ∘ $extra si l'extra commence par '__append__', sinon remplace.
+# concat $base ∘ $extra if extra starts with '__append__', otherwise replace.
 def merge_lists [base: list<any>, extra: list<any>] {
     if (not ($extra | is-empty)) and (($extra | first) == '__append__') {
         ($base | append ($extra | skip 1)) | uniq
@@ -247,15 +247,15 @@ def merge_lists [base: list<any>, extra: list<any>] {
     }
 }
 
-# charge la config résolue pour les FONCTIONS actives (socle + fonctions fusionnés).
-# Retourne une record plate contenant TOUTES les clés attendues par le moteur.
-# Usage interne : `kunai_rules_local.nu` l'appelle puis fait `.<nom_de_clé>`.
+# loads the config resolved for the ACTIVE FUNCTIONS (merged base + functions).
+# Returns a flat record containing ALL the keys expected by the engine.
+# Internal usage: `kunai_rules_local.nu` calls it then does `.<key_name>`.
 export def load_cfg [--profile: string] {
     let base = (default_defs)
     let fns  = (current_profile --profile=$profile)
 
-    # On part du socle, puis on CONCATÈNE chaque fonction active dans l'ordre.
-    # merge_lists applique la sémantique '__append__' (concat dedup) sinon remplace.
+    # Start from the base, then merge each active function in order.
+    # merge_lists applies the '__append__' semantics (concat dedup) otherwise replaces.
     $fns | reduce -f $base {|fn, acc|
         let prof = (function_profiles | get --optional $fn | default {})
         ($prof | columns) | reduce -f $acc {|k, a|
@@ -267,10 +267,10 @@ export def load_cfg [--profile: string] {
     }
 }
 
-# Liste des FONCTIONS actives (liste de noms), pour affichage / debug.
-# Priorité : --profile explicite > $env.KUNAI_PROFILE (posé par le moteur) > `all`.
-# 'all' (ou valeur vide / inconnue) = toutes les fonctions dans l'ordre canonique.
-# Une valeur "a,b" = socle + a + b (dans l'ordre canonique filtré).
+# List of the ACTIVE FUNCTIONS (list of names), for display / debug.
+# Priority: explicit --profile > $env.KUNAI_PROFILE (set by the engine) > `all`.
+# 'all' (or empty / unknown value) = all functions in canonical order.
+# A value "a,b" = base + a + b (in the filtered canonical order).
 export def current_profile [--profile: string] {
     let env_prof = ($env | get --optional KUNAI_PROFILE | default '')
     let sel = (if ($profile | is-not-empty) { $profile } else if (($env_prof | str trim) != '') { $env_prof } else { 'all' })
@@ -278,7 +278,7 @@ export def current_profile [--profile: string] {
     if (($sel | str trim) == 'all') {
         $order
     } else {
-        # filtre l'ordre canonique sur la sélection CSV (déduplique et ordonne).
+        # filters the canonical order on the CSV selection (deduplicates and orders).
         ($sel | split row ',' | each {|s| $s | str trim } | where {|s| $s != '' })
         | reduce -f [] {|s, acc| if ($order | any {|o| $o == $s }) { $acc | append $s } else { $acc } }
     }

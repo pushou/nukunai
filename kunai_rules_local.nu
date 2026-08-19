@@ -1,44 +1,44 @@
 #!/usr/bin/env nu
 # kunai_rules_local.nu
 #
-# RULES LOCALES — INTERFACE d'accès au contexte machine PARAMÉTRABLE.
+# LOCAL RULES — INTERFACE to access the PARAMETRIZABLE machine context.
 #
-# Ce fichier n'est PLUS la source de vérité des allowlists : c'est une INTERFACE
-# (contrat) vers `kunai_local_cfg.nu`, le fichier de DONNÉES où vivent désormais :
-#   * le SOCLE générique `default` (commun à toutes les machines, strict) ;
-#   * des `function_profiles` PAR FONCTION (thématiques d'allowlist) combina­bles :
-#     dns / network / docker / elk / kube. Le profil `all` (DÉFAUT) les prend TOUS.
+# This file is NO LONGER the source of truth for the allowlists: it is an
+# INTERFACE (contract) to `kunai_local_cfg.nu`, the DATA file where now live:
+#   * the generic `default` BASE (common to all machines, strict);
+#   * `function_profiles` PER FUNCTION (allowlist themes) combinable:
+#     dns / network / docker / elk / kube. The `all` profile (DEFAULT) takes them ALL.
 #
-# Le moteur (kunai_detect_compromise.nu) continue d'appeler :
+# The engine (kunai_detect_compromise.nu) keeps calling:
 #   use kunai_rules_local.nu local_cfg
-#   local_cfg legit_agents                  # profil `all` par défaut (toutes fonctions)
-#   local_cfg allowlist_egress_paths --profile "docker,elk"   # fonctions restreintes
+#   local_cfg legit_agents                  # `all` profile by default (all functions)
+#   local_cfg allowlist_egress_paths --profile "docker,elk"   # restricted functions
 #
-# La sélection des fonctions et la fusion socle+fonctions sont gérées dans
-# kunai_local_cfg.nu (load_cfg), pas ici — ce fichier reste volontairement mince.
+# Function selection and base+functions merging are handled in
+# kunai_local_cfg.nu (load_cfg), not here — this file stays intentionally thin.
 #
-# ── Sélection des fonctions (dans load_cfg, priorité décroissante) ──────
-#   1. `--profile` explicite (liste CSV de fonctions, ex. "dns,network") sur un
-#      appel `local_cfg <clé> --profile "a,b"` ;
-#   2. `$env.KUNAI_PROFILE` (posé par le moteur depuis son flag --profile) ;
-#   3. sinon → `all` (toutes les fonctions dans l'ordre canonique).
-# Dans tous les cas, le SOCLE `default` est toujours appliqué en base.
+# ── Function selection (in load_cfg, decreasing priority) ──────
+#   1. explicit `--profile` (CSV list of functions, e.g. "dns,network") on a
+#      `local_cfg <key> --profile "a,b"` call;
+#   2. `$env.KUNAI_PROFILE` (set by the engine from its --profile flag);
+#   3. otherwise → `all` (all functions in canonical order).
+# In every case, the `default` BASE is always applied as the foundation.
 
 use kunai_local_cfg.nu [load_cfg, current_profile]
 
-# Retourne la valeur d'une clé de config locale, résolue pour le profil courant.
-# Accepte désormais toutes les clés du socle ET les clés propres aux profils
+# Returns the value of a local config key, resolved for the current profile.
+# Now accepts all the base keys AND the profile-specific keys
 # (allowlist_egress_paths, allowlist_dns_queries…).
 export def local_cfg [name: string, --profile: string] {
     let cfg = (load_cfg --profile=$profile)
     if (($cfg | get --optional $name) == null) {
-        error make { msg: $"règle locale inconnue: ($name) — clés dispo: (($cfg | columns | str join ', '))" }
+        error make { msg: $"unknown local rule: ($name) — available keys: (($cfg | columns | str join ', '))" }
     }
     $cfg | get $name
 }
 
-# Propriété de debug : résout et affiche le profil effectivement utilisé.
-#   nu kunai_rules_local.nu --  (non ; lancer :  nu -c 'use kunai_rules_local.nu *; profile')
+# Debug property: resolves and prints the profile actually in use.
+#   nu kunai_rules_local.nu --  (no; run:  nu -c 'use kunai_rules_local.nu *; profile')
 export def profile [--profile: string] {
     current_profile --profile=$profile
 }
