@@ -1,5 +1,5 @@
 #!/usr/bin/env nu
-# Convert kunai events log file to flatten parquet file - this will not be working for all kunai events log files
+# Convert kunai events log file to flatten parquet file - this will not work for all kunai events log files
 # usage: ls  *.gz |get name |each {nu kunai_to_parquet.nu $in}
 # usage: nu kunai_to_flatten_parquet.nu events.log.4858.parquet
 # polars open  events.log.4858.parquet |polars into-nu |explore
@@ -9,7 +9,7 @@ export def setFilename [
 let extension = ($eventslog|path parse|get extension)
 
 match $extension {
-  'gz' => {$eventslog | path basename |split column '.' |insert fich_name {$in.column1 + '_' + $in.column3 + '.parquet'}|get fich_name.0},
+  'gz' => {$eventslog | path basename |split column '.' |insert file_name {$in.column1 + '_' + $in.column3 + '.parquet'}|get file_name.0},
   _ => {$eventslog + ".parquet"}     
   }   
 }
