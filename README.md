@@ -3,7 +3,11 @@ nushell polars scripts to analyse/filter kunai logs (jsonl to parquet file).
 
 ## Demo
 
-**Compromise detection** — run the engine on a raw kunai sample, then read the
+**Interactive exploration** — ad-hoc queries (`kunai_queries.nu`) over a sample:
+
+<img src="images/explore.gif" width="150%" >
+
+**Compromise detection** (experimental) — run the engine on a raw kunai sample, then read the
 generated markdown report and the detections parquet:
 
 <img src="images/detect.gif" width="150%" >
@@ -19,9 +23,6 @@ cat scanresult<TS>/<short_hash>_execve*_connect*.md
 nu -c "plugin use polars; polars open scanresult<TS>/detections_execve.parquet | polars collect"
 ```
 
-**Interactive exploration** — ad-hoc queries (`kunai_queries.nu`) over a sample:
-
-<img src="images/explore.gif" width="150%" >
 
 ## requirements 
 Nushell and its blazing fast polars plugins, kunai logs (install kunai (https://github.com/kunai-project/) or see ngsoti malware dataset)
@@ -563,3 +564,8 @@ nu ngsoti_all.nu
 nu ngsoti_report.nu                    # output into $JCODE_SCRATCH_DIR/ngsoti_out (else ./ngsoti_out)
 nu ngsoti_report.nu my_folder          # output into my_folder
 ```
+
+
+## source of inspiration
+
+https://github.com/digisquad-repo/kunai-rules.git
