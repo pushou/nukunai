@@ -831,7 +831,10 @@ def "main iocs" [
     let evcol = (event_name_col $base)
 
     # colonnes à sélectionner par branche (évite de référencer une colonne absente).
-    let net_keep = (['ancestors' 'dst' 'src'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
+    # `src` n'est pas toujours présent (formats kunai variables) -> on ne le
+    # sélectionne/déplie que s'il existe, sinon src_port reste vide.
+    let has_src = ('src' in $allcols)
+    let net_keep = (['ancestors' 'dst'] | append (if $has_src { ['src'] } else { [] }) | append (if $bin_col != '' { [$bin_col] } else { [] }))
     let dns_keep = (['query' 'response' 'ancestors'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
     let exe_keep = (['ancestors' $evcol] | append (if $bin_col != '' { [$bin_col] } else { [] }))
 
@@ -839,8 +842,8 @@ def "main iocs" [
     let netsrc = ($base
         | polars filter (((polars col $evcol) == 'connect') or ((polars col $evcol) == 'send_data'))
         | polars select $net_keep
-        | polars unnest dst -s "_"
-        | polars unnest src -s "_")
+        | polars unnest dst -s "_")
+    let netsrc = (if $has_src { $netsrc | polars unnest src -s "_" } else { $netsrc })
     let netcols = ($netsrc | polars schema | columns)
     let net = (if ('dst_ip' in $netcols) {
         ($netsrc
@@ -851,8 +854,8 @@ def "main iocs" [
                 {
                     type: (if $ev == 'connect' { 'egress-ip' } else { 'send-ip' })
                     indicator: ($r.dst_ip | into string)
-                    dest_port: ($r.dst_port | default '' | into string)
-                    src_port: ($r.src_port | default '' | into string)
+                    dest_port: ($r | get -o dst_port | default '' | into string)
+                    src_port: ($r | get -o src_port | default '' | into string)
                     binary: (if $bin_col != '' { $r | get $bin_col | default '' } else { '' })
                     ancestors: ($r.ancestors | default '' | into string)
                 }
