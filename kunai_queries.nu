@@ -169,6 +169,25 @@ def render_top [df, top: int, valuecol: string] {
         | first $top)
 }
 
+# Vrai si une IP (texte) est réellement publique : écarte les plages RFC1918
+# (10/8, 172.16/12, 192.168/16), loopback (127.), link-local (169.254.),
+# multicast/broadcast et les IPv4-mappées des réseaux Docker internes
+# (::ffff:10. / ::ffff:192.168. / ::ffff:172.16..31.).
+# Le texte suffit ici (dst_public est peu fiable en IPv4-mappée).
+def is_public_ip [ip: string] {
+    let i = ($ip | str trim)
+    not (
+        ($i == '0.0.0.0') or ($i == '::') or ($i == '::1')
+        or ($i == '255.255.255.255')
+        or (($i | str starts-with '10.') or ($i | str starts-with '192.168.'))
+        or ($i =~ '^172\.(1[6-9]|2[0-9]|3[01])\.')
+        or ($i starts-with '127.') or ($i starts-with '169.254.')
+        or ($i starts-with '::ffff:10.') or ($i starts-with '::ffff:192.168.')
+        or ($i =~ '^::ffff:172\.(1[6-9]|2[0-9]|3[01])\.')
+        or ($i starts-with '::ffff:127.')
+    )
+}
+
 # ------------------------------------------------ requêtes (sous-commandes)
 
 # Lien type d'événement kunai -> sous-requête de traitement (affiché par events).
@@ -724,31 +743,144 @@ def "main send-ports" [
     if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun send_data dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
 }
 
-# Top IPs du send_data.
-def "main send-ips" [
+# Extraction consolidée des IOC (indicateurs de compromission), équivalent nushell
+# de `view_iocs` des scripts kunai officiels. Regroupe en une seule vue les
+# indicateurs portés par les événements à fort signal :
+#   connect / send_data -> IP et port de destination (egress)
+#   dns_query            -> domaine interrogé + IPs résolues (réponse)
+#   execve / mmap_exec   -> exécutable exotique (hors chemins système)
+# Chaque ligne indique le TYPE d'ioc, la valeur, le binaire responsable et sa
+# chaîne d'ancêtres. `--public` ne garde que les IP réellement publiques (pas les
+# plages privées/mappées, cf. dst_public peu fiable en IPv4-mappée).
+def "main iocs" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
-    --top: int = 10       # nombre de lignes
+    --public (-p)         # ne garder que les IP réellement publiques (egress)
+    --top: int = 30       # nombre de lignes
     --all (-a)            # toutes les lignes
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
     if not (require_file $file) { return }
-    let base = (events_frame $file $infer_schema 'send_data')
-    let base = (unnestif $base 'dst')
-    let cols = ($base | polars schema | columns)
-    if 'dst_ip' not-in $cols {
-        print $"(ansi yellow)✗ aucune colonne dst_ip pour send_data sur ce format(ansi reset)"
+    let base = (open_source $file $infer_schema)
+
+    # Binaire responsable : colonne issue de l'unnest de `exe` (ngsoti `exe.file`
+    # -> exe_file, registre `exe.path` -> exe_path). Absente -> '' (on saute execve).
+    let allcols = ($base | polars schema | columns)
+    let bin_col = (if 'exe' in $allcols {
+        let e = ($base | polars unnest exe -s "_" | polars schema | columns)
+        if 'exe_path' in $e { 'exe_path' } else if 'exe_file' in $e { 'exe_file' } else { '' }
+    } else { '' })
+    let base = (if 'exe' in $allcols { $base | polars unnest exe -s "_" } else { $base })
+    let evcol = (event_name_col $base)
+
+    # colonnes à sélectionner par branche (évite de référencer une colonne absente).
+    let net_keep = (['ancestors' 'dst'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
+    let dns_keep = (['query' 'response' 'ancestors'] | append (if $bin_col != '' { [$bin_col] } else { [] }))
+    let exe_keep = (['ancestors' $evcol] | append (if $bin_col != '' { [$bin_col] } else { [] }))
+
+    # ---- connect & send_data : egress IP + port ----
+    let netsrc = ($base
+        | polars filter (((polars col $evcol) == 'connect') or ((polars col $evcol) == 'send_data'))
+        | polars select $net_keep
+        | polars unnest dst -s "_")
+    let netcols = ($netsrc | polars schema | columns)
+    let net = (if ('dst_ip' in $netcols) {
+        ($netsrc
+            | polars collect
+            | polars into-nu
+            | each {|r|
+                let ev = ($r | get -o $evcol | default '')
+                {
+                    type: (if $ev == 'connect' { 'egress-ip' } else { 'send-ip' })
+                    indicator: ($r.dst_ip | into string)
+                    port: ($r.dst_port | default '' | into string)
+                    binary: (if $bin_col != '' { $r | get $bin_col | default '' } else { '' })
+                    ancestors: ($r.ancestors | default '' | into string)
+                }
+            })
+    } else { [] })
+    # `--public` : ne garder que du trafic sortant réellement public (à destination
+    # d'une IP non privée/liée locale). Le texte suffit ici : on écarte les plages
+    # RFC1918 / loopback / réseaux Docker internes (y compris les IPv4-mappées ::ffff:).
+    let net = ($net | where {|r| if not $public { true } else { (is_public_ip $r.indicator) } })
+    let net = ($net | where {|r| $r.indicator != 'null' and ($r.indicator | is-not-empty) })
+
+    # ---- dns_query : domaine interrogé + IPs de la réponse ----
+    let dnsrc = ($base
+        | polars filter ((polars col $evcol) == 'dns_query')
+        | polars select $dns_keep)
+    let dnscols = ($dnsrc | polars schema | columns)
+    let dns = (if ('query' in $dnscols) {
+        ($dnsrc
+            | polars collect
+            | polars into-nu
+            | each {|r|
+                {
+                    type: 'dns'
+                    indicator: ($r.query | default '' | into string)
+                    port: ($r.response | default '' | into string)
+                    binary: (if $bin_col != '' { $r | get $bin_col | default '' } else { '' })
+                    ancestors: ($r.ancestors | default '' | into string)
+                }
+            })
+    } else { [] })
+    let dns = ($dns | where {|r| $r.indicator != 'null' and ($r.indicator | is-not-empty) })
+
+    # ---- execve / mmap_exec : exécutable (IOC fichier) ----
+    let exesrc = ($base
+        | polars filter (((polars col $evcol) == 'execve') or ((polars col $evcol) == 'mmap_exec'))
+        | polars select $exe_keep)
+    let execols = ($exesrc | polars schema | columns)
+    let exes = (if ($bin_col != '' and $bin_col in $execols) {
+        ($exesrc
+            | polars collect
+            | polars into-nu
+            | each {|r|
+                {
+                    type: (if (($r | get $evcol | default '') == 'execve') { 'execve' } else { 'mmap-exec' })
+                    indicator: ($r | get $bin_col | default '' | into string)
+                    port: ''
+                    binary: ($r | get $bin_col | default '' | into string)
+                    ancestors: ($r.ancestors | default '' | into string)
+                }
+            })
+    } else { [] })
+    let exes = ($exes | where {|r| $r.indicator != 'null' and ($r.indicator | is-not-empty) })
+
+    let rows = ($net | append $dns | append $exes)
+
+    if (($rows | length) == 0) {
+        if $public { print $"(ansi yellow)✗ aucun IOC public dans ce fichier(ansi reset)" } else { print $"(ansi yellow)✗ aucun IOC dans ce fichier(ansi reset)" }
         return
     }
-    let all_rows = ($base
-        | polars select dst_ip
-        | polars drop-nulls
-        | polars get dst_ip
-        | polars value-counts
-        | polars sort-by [count dst_ip] -r [true false]
-        | polars collect
-        | polars into-nu)
-    if (($all_rows | length) == 0) { print $"(ansi yellow)✗ aucun send_data dans ce fichier(ansi reset)" } else if $all { $all_rows } else { $all_rows | first $top }
+
+    # Agrège les lignes par (type, indicateur) pour sortir des uniques : ports et
+    # binaires responsables concaténés, ancêtres les plus fréquents en tête.
+    let agg = ($rows
+        | group-by {|r| $"($r.type)|($r.indicator)" }
+        | items {|k, v|
+            let parts = ($k | split row '|')
+            let ports = ($v.port | where {|p| ($p | is-not-empty) and $p != '' } | uniq | str join '; ')
+            let bins  = ($v.binary | where {|b| ($b | is-not-empty) and $b != '' } | uniq | str join '; ')
+            {
+                type: ($parts.0)
+                indicator: ($parts.1)
+                count: ($v | length)
+                ports: $ports
+                binary: $bins
+                ancestors: ($v.ancestors
+                    | where {|a| ($a | is-not-empty) and $a != '' }
+                    | group-by {|a| $a }
+                    | items {|k, g| { value: $k, count: ($g | length) } }
+                    | sort-by count -r
+                    | first 1
+                    | get -o value
+                    | default '')
+            }
+        })
+    let agg = ($agg | sort-by type count -r)
+    if $all { $agg } else { $agg | first $top }
 }
+
 
 # ---------------------------------------------------------------- CLI
 
@@ -771,6 +903,7 @@ const REQUESTS = {
     'bpf-progs':       { desc: 'programmes eBPF chargés (rootkit)',     arg: '--top/--all' }
     'send-ports':      { desc: 'top ports du send_data',                arg: '--top/--all' }
     'send-ips':        { desc: 'top IPs du send_data',                  arg: '--top/--all' }
+    iocs:              { desc: 'vue consolidée des IOC (egress / dns / execve)', arg: '--public/--top/--all' }
 }
 
 def print_help [] {
