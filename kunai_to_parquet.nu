@@ -1,9 +1,9 @@
 
 # kunai_to_parquet.nu
 #
-# Convertit un fichier d'événements kunai (ndjson brut .jsonl ou compressé .gz)
-# vers le format Parquet (.parquet), pour un traitement lazy polars beaucoup plus
-# rapide (le parsing ndjson + l'inférence de schéma ne sont faits qu'une fois).
+# Converts a kunai events file (raw ndjson .jsonl or compressed .gz)
+# to the Parquet format (.parquet), for a much faster lazy polars processing
+# (ndjson parsing + schema inference are only done once).
 #
 # Usage:
 #   nu kunai_to_parquet.nu kunai.jsonl
@@ -13,27 +13,28 @@
 #   nu kunai_to_parquet.nu kunai.jsonl --noflat
 #
 # Options:
-#   --infer-schema N   nb de lignes pour inférer le schéma (défaut 200000 ;
-#                      sous 200000 l'inférence peut échouer sur les gros lots)
-#   --eager            conversion en mode eager (6x plus rapide mais très
-#                      gourmand en RAM : sature la mémoire sur les gros gz ;
-#                      lazy est par défaut car il passe partout)
-#   --noflat           ne pas aplatir data/info (conserver la structure brute)
-#   --output FILE      nom exact du parquet de sortie (défaut : à côté de la
-#                      source, nom non ambigu, cf. default_output)
+#   --infer-schema N   rows to infer the schema (default 200000 ;
+#                      below 200000 inference may fail on large batches)
+#   --eager            conversion in eager mode (6x faster but very
+#                      RAM-hungry: saturates memory on large gz files;
+#                      lazy is the default because it works everywhere)
+#   --noflat           do not flatten data/info (keep the raw structure)
+#   --output FILE      exact name of the output parquet (default: next to the
+#                      source, unambiguous name, cf. default_output)
 #
-# NOM DE SORTIE : un .gz et son .jsonl décompressé convergent vers le SAME parquet :
+# OUTPUT NAME: a .gz and its decompressed .jsonl converge to the SAME parquet:
 #   kunai.jsonl    -> kunai.jsonl.parquet
 #   kunai.jsonl.gz -> kunai.jsonl.parquet
 #
-# NON DESTRUCTIF : la source .gz/.jsonl n'est JAMAIS supprimée ni écrasée. En mode
-# eager, le .gz est décompressé vers un fichier temporaire (polars ne lit pas le
-# gz compressé en eager), converti, puis le temporaire est supprimé (même en cas
-# d'échec). En mode lazy (défaut), le gz est lu directement, sans temporaire.
+# NON-DESTRUCTIVE: the .gz/.jsonl source is NEVER deleted nor overwritten. In
+# eager mode, the .gz is decompressed to a temporary file (polars cannot read
+# the compressed gz in eager mode), converted, then the temporary is deleted
+# (even on failure). In lazy mode (default), the gz is read directly, without
+# a temporary.
 
-# Nom de sortie par défaut : pour qu'un .gz et son .jsonl décompressé convergent
-# vers le MÊME parquet, on retire seulement un éventuel suffixe `.gz`, puis on
-# conserve le reste du nom et on ajoute `.parquet` :
+# Default output name: so that a .gz and its decompressed .jsonl converge to
+# the SAME parquet, we only strip an eventual `.gz` suffix, then keep the rest
+# of the name and append `.parquet`:
 #   test.jsonl.gz -> test.jsonl.parquet
 #   test.jsonl    -> test.jsonl.parquet
 def default_output [eventslog: string] {
@@ -70,14 +71,14 @@ export def save_into_parquet [
 export def main [
     kunai_events_log_file: string
     --infer-schema: int = 200000
-    --eager                      # eager = 6x plus rapide mais très gourmand en RAM ; lazy par défaut
-    --noflat                     # ne pas aplatir data/info (conserver le brut)
-    --output: string             # nom exact du parquet de sortie (défaut : par défaut)
+    --eager                      # eager = 6x faster but very RAM-hungry; lazy by default
+    --noflat                     # do not flatten data/info (keep the raw structure)
+    --output: string             # exact name of the output parquet (default: by default)
 ] {
     let eager_param = if $eager { "--eager" } else { "--lazy" }
     let noflat_param = if $noflat { "noflat" } else { "flat" }
 
-    # le fichier source doit exister
+    # the source file must exist
     if not ($kunai_events_log_file | path exists) {
         return $"file ($kunai_events_log_file) not found"
     }
@@ -89,17 +90,17 @@ export def main [
 
     let out = ($output | default (default_output $kunai_events_log_file))
 
-    # En mode eager, un .gz compressé ne peut pas être lu directement par polars.
-    # On le décompresse vers un fichier TEMPORAIRE (la source .gz reste intacte),
-    # on convertit le temp vers le parquet final, puis on supprime le temp.
-    # Le temp est supprimé dans TOUS les cas (même si la conversion échoue, par
-    # ex. épuisement mémoire du plugin polars) : on capture le statut avec try/
-    # catch, on nettoie, puis on réémett l'erreur éventuelle.
+    # In eager mode, a compressed .gz cannot be read directly by polars.
+    # It is decompressed to a TEMPORARY file (the .gz source stays intact),
+    # the temp is converted to the final parquet, then the temp is deleted.
+    # The temp is deleted in ALL cases (even if the conversion fails, e.g.
+    # memory exhaustion of the polars plugin): the status is captured with try/
+    # catch, we clean up, then re-emit the eventual error.
     if $file_extension == 'gz' and $eager_param == "--eager" {
         let ori_dir = ($kunai_events_log_file | path dirname)
         let temp_unzipped = ($ori_dir | path join ($kunai_events_log_file | path basename | path parse | get stem)) + ".unzip.tmp"
         ^gzip -dc $kunai_events_log_file o> $temp_unzipped
-        print $"unzipped - non destructif - depuis ($kunai_events_log_file) vers ($temp_unzipped)"
+        print $"unzipped - non-destructive - from ($kunai_events_log_file) to ($temp_unzipped)"
         let status = (try {
             save_into_parquet $temp_unzipped $eager_param $infer_schema $noflat_param $out
             'ok'
