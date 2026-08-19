@@ -4,9 +4,9 @@
 Output nukunai-kunai-queries.gif
 
 Set Shell bash
-Set FontSize 12
-Set Width 2400
-Set Height 820
+Set FontSize 15
+Set Width 2900
+Set Height 1100
 Set Padding 20
 Set WindowBar Colorful
 Set TypingSpeed 35ms
