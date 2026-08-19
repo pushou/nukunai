@@ -1,8 +1,8 @@
 ---
-# Reverse shell natif BASH/SH : ouverture directe /dev/tcp/ ou /dev/udp/ par un
-# interpréteur shell -- source de reverse shell la plus fiable (aucun usage légitime).
-# Séparé du cas "-i nc/socat" : ici pas besoin de l'option -i, l'usage de /dev/tcp
-# dans une ligne de commande shell est déjà un indicateur de compromission active.
+# Native BASH/SH reverse shell: direct /dev/tcp/ or /dev/udp/ opening by a shell
+# interpreter -- the most reliable reverse shell source (no legitimate usage).
+# Separate from the "-i nc/socat" case: here the -i option is not needed, using /dev/tcp
+# in a shell command line is already an active compromise indicator.
 name: reverse_shell.execve.detection
 type: detection
 meta:

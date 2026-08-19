@@ -8,16 +8,16 @@ meta:
 match-on:
   events:
     kunai: [connect]
-# Ports C2/backdoor/Tor/mining et protocoles réseaux inhabituels pour une
-# destination publique (T1095 / T1496).
+# C2/backdoor/Tor/mining ports and unusual network protocols to a public
+# destination (T1095 / T1496).
 #
-# Syntaxe gene : le DSL gene ne supporte ni `in [...]`, ni littéral de liste,
-# NI littéral entier nu (la grammaire match.pest de `value` n'accepte que
-# chaînes quotes, "none"/"some"/"true"/"false"). Un entier nu en RHS de `==`
-# → "expected value or indirect_field_path" (même sur la règle OFFICIELLE
-# digisquad net_c2_port, en kunai 0.4.0 COMME 0.6.2).
-# La forme CORRECTE est la chaîne QUOTEE : gene fait Number::from_str('445')
-# → MatchValue::StringOrNumber(…), et compare alors numériquement le champ.
+# gene syntax: the gene DSL supports neither `in [...]` nor list literals,
+# NOR a bare integer literal (the match.pest grammar of `value` only accepts
+# quoted strings, "none"/"some"/"true"/"false"). A bare integer on the RHS of `==`
+# → "expected value or indirect_field_path" (even on the OFFICIAL digisquad
+# net_c2_port rule, in kunai 0.4.0 AND 0.6.2).
+# The CORRECT form is the QUOTED string: gene calls Number::from_str('445')
+# → MatchValue::StringOrNumber(…), and then compares the field numerically.
 matches:
   $p4444:  .data.dst.port == '4444'
   $p4445:  .data.dst.port == '4445'

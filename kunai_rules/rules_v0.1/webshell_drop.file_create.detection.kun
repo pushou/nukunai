@@ -8,8 +8,8 @@ meta:
 match-on:
   events:
     kunai: [file_create]
-# Script serveur (php/asp/jsp/cgi/py/rb/pl) créé dans un document-root web
-# (T1505.003, sev 9). Valeurs en quotes simples YAML pour préserver les backslashes.
+# Server script (php/asp/jsp/cgi/py/rb/pl) created in a web document-root
+# (T1505.003, sev 9). Single-quoted YAML values to preserve the backslashes.
 matches:
   $docroot: '.data.path ~= "^/var/www(/|$)|^/srv/www(/|$)|^/usr/share/nginx/html(/|$)|^/usr/share/apache2(/|$)|^/opt/[^/]*/(htdocs|www|public_html|webroot)(/|$)"'
   $script:  '.data.path ~= "\.(php|php5|php7|phtml|asp|aspx|jsp|cgi|py|rb|pl)$"'

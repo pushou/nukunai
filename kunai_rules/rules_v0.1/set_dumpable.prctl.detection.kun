@@ -8,8 +8,8 @@ meta:
 match-on:
   events:
     kunai: [prctl]
-# Modification PR_SET_DUMPABLE (évasion / anti-capture de mémoire, T1622).
-# attention : .data.option est une chaîne, pas un entier.
+# PR_SET_DUMPABLE modification (evasion / memory capture bypass, T1622).
+# note: .data.option is a string, not an integer.
 matches:
   $d: '.data.option == "PR_SET_DUMPABLE"'
 condition: $d

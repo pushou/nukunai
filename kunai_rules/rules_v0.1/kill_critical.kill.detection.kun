@@ -8,8 +8,8 @@ meta:
 match-on:
   events:
     kunai: [kill]
-# Cible critique tuée (agent/daemon) OU SIGKILL hors cycle de vie (T1489).
-# Le process cible est exposé sous .data.target.task.name dans kunai.
+# Critical target killed (agent/daemon) OR SIGKILL outside lifecycle (T1489).
+# The target process is exposed under .data.target.task.name in kunai.
 matches:
   $target: '.data.target.task.name ~= "(docker|containerd|sshd|systemd|wazuh|crowdsec|splunk|check_mk|auditd|cron|agent)"'
   $hard:   '.data.signal == "SIGKILL"'

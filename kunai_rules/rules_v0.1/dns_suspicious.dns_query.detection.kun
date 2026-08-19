@@ -8,9 +8,9 @@ meta:
 match-on:
   events:
     kunai: [dns_query]
-# TLD suspects (T1568.002) OU requête anormalement longue (>60, tunneling DNS,
-# T1071.004). La longueur est exprimée par une regex (gene n'a pas de len()).
-# Valeurs en quotes simples YAML pour préserver les backslashes.
+# Suspicious TLDs (T1568.002) OR abnormally long query (>60, DNS tunneling,
+# T1071.004). The length is expressed with a regex (gene has no len()).
+# Single-quoted YAML values to preserve the backslashes.
 matches:
   $tld:  '.data.query ~= "(?:\.tk$|\.ml$|\.ga$|\.cf$|\.gq$|\.top$|\.xyz$|\.pw$|\.onion$|\.i2p$)"'
   $long: '.data.query ~= ".{61,}"'
