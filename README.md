@@ -573,4 +573,5 @@ https://github.com/digisquad-repo/kunai-rules.git
 ## Model
 
 * Initial version: Mine
-* Enhancements: DeepSeekV4-Flash
+* Enhancements: DeepSeekV4-Flash (with the assistance of harness, jcode, and Albert: https://ia.numerique.gouv.fr/outils-ia/albert-api/)
+
