@@ -25,7 +25,7 @@
 #   network          vue réseau : command_line + dst (flatten)
 #   dst-ports        ports + ancestors uniques groupés par IP de destination (dst nested ou aplati)
 #   file-extensions  extensions des chemins créés          (filter_write)
-#   file-creates     fichiers créés : chemin + binaire écrivain (file_create)
+#   file-creates     fichiers créés : chemin + binaire écrivain (--skip-benign pour masquer le bruit système)
 #   kill-targets     cibles tuées (kill)                   (filter_kill)
 #   prctl-options    options prctl par processus
 #   file-renames     renommages old->new (file_rename)
@@ -431,10 +431,14 @@ def "main network" [
 
 # Liste des fichiers créés (file_create) : chemin créé + binaire écrivain.
 # `path` = chemin créé (ex. /root/bin), `exe_path` = binaire qui écrit (ex. /tmp/sample.bin).
+# `--skip-benign` masque les écritures des agents système / utilitaires bénins connus
+# (sftp-server/restic, systemd-journald, osqueryd, bash, cp, tar...) pour ne garder
+# que les créations de fichiers qui ne tombent pas dans le bruit attendu.
 def "main file-creates" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
     --top: int = 20       # nombre de lignes
     --all (-a)            # toutes les lignes
+    --skip-benign (-b)    # masque les écrivains système/utilitaires bénins connus
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
     if not (require_file $file) { return }
@@ -444,19 +448,47 @@ def "main file-creates" [
         print $"(ansi yellow)✗ colonne path absente pour file_create(ansi reset)"
         return
     }
-    # le chemin créé (path) est renommé pour ne pas entrer en collision avec exe_path
-    # lors de l'unnest de la struct `exe` (même logique que event -> event_info).
+    # le chemin créé (path) est renommé pour ne pas entrer en collision avec le
+    # chemin du binaire écrivain lors de l'unnest de la struct `exe` (même logique
+    # que event -> event_info). Le champ interne de `exe` diffère selon le format :
+    # `path` (registre/parquet) ou `file` (ngsoti/jsonl) -> on renomme le bon en
+    # writer_path.
     let renamed = if 'exe' in $cols { $base | polars rename path created_path } else { $base }
-    let df = ($renamed
-        | unnestif $in 'exe'
-        | (if 'exe' in $cols { polars rename exe_path writer_path } else { $in })
+    let unnested = ($renamed | unnestif $in 'exe')
+    let after = ($unnested | polars schema | columns)
+    let writer_col = (if 'exe_path' in $after { 'exe_path' } else if 'exe_file' in $after { 'exe_file' } else { '' })
+    let df = ($unnested
+        | (if $writer_col != '' { polars rename $writer_col writer_path } else { $in })
         | cols_keep [created_path writer_path command_line]
         | polars drop-nulls
         | polars unique -s [created_path]
         | polars sort-by created_path
         | polars collect
         | polars into-nu)
-    if (($df | length) == 0) { print $"(ansi yellow)✗ aucun file_create dans ce fichier(ansi reset)" } else if $all { $df } else { $df | first $top }
+    if (($df | length) == 0) {
+        print $"(ansi yellow)✗ aucun file_create dans ce fichier(ansi reset)"
+        return
+    }
+    if $skip_benign {
+        # équivalent local des legit_agents + benign_utilities du moteur, noms de
+        # binaire de l'écrivain : sftp-server/restic, journald, systemd, osquery,
+        # bascules shell et utilitaires banals de la chaîne système/backup.
+        let benign = ['sftp-server','systemd-journald','systemd-logind','systemd',
+                      'systemd-xdg-autostart-generator','osqueryd','wazuh-agentd',
+                      'cmk-agent-ctl','kunai','dash','bash','sh','cp','tar','mktemp',
+                      'gzip','xz','mv','rm','touch','mkdir']
+        let kept = ($df | where {|r|
+            let w = ($r.writer_path | path basename)
+            $w not-in $benign and (not ($r.created_path =~ 'restic-temp'))
+        })
+        if (($kept | length) == 0) {
+            print $"(ansi yellow)✗ aucun file_create non-bénin (--skip-benign) dans ce fichier(ansi reset)"
+            return
+        }
+        if $all { $kept } else { $kept | first $top }
+        return
+    }
+    if $all { $df } else { $df | first $top }
 }
 
 # Extensions des chemins créés (file_create / filter_write).
