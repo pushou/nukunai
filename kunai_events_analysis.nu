@@ -7,16 +7,16 @@
 #Parameters:
  # kunai events log file <string>
 
-# Compte les évènements par nom depuis un fichier Parquet déjà aplatit.
+# Counts the events by name from an already flattened Parquet file.
 def count_by_events_name_parquet [
     eventslogparquet: string ] {
     let kunai_polars_frame = (polars open $eventslogparquet)
     $kunai_polars_frame|polars get event|polars unnest event|polars get name|polars value-counts |polars sort-by [count] -r [true]
 }
 
-# Compte les évènements par nom directement depuis un .gz / ndjson, SANS
-# passer par le format parquet : polars décompresse les .gz nativement via
-# le lecteur ndjson. Unnest de data/info pour exposer la colonne event.
+# Counts the events by name directly from a .gz / ndjson, WITHOUT going through
+# the parquet format: polars decompresses the .gz natively via the ndjson reader.
+# Unnest of data/info to expose the event column.
 def count_by_events_name_ndjson [
     eventslog: string
     infer_schema: int ] {
@@ -44,7 +44,7 @@ def main [
     if ($file_extension == 'parquet') {
         count_by_events_name_parquet $kunai_events_log_file
     } else {
-        # .gz (ou ndjson brut) : lecture directe, pas de conversion parquet
+        # .gz (or raw ndjson): direct read, no parquet conversion
         count_by_events_name_ndjson $kunai_events_log_file $infer_schema
     }
 }
