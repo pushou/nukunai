@@ -8,7 +8,7 @@
 # d'événement + agrégation (count / top-N) + tri.
 #
 # Usage :
-#   nu kunai_queries.nu <requête> <file> [--top N] [--filter RE] [--all] [--infer-schema N]
+#   nu kunai_queries.nu <requête> <file> [--top N] [--filter "regex"] [--all] [--infer-schema N]
 #   nu kunai_queries.nu help
 #   nu kunai_queries.nu <requête> --help   (help détaillé de la sous-commande)
 #
@@ -22,7 +22,7 @@
 #   exes             premier mot des command_line execve    (palette d'exe)
 #   connect-ips      top dst_ip des connexions (--public)  (filter_connect)
 #   connect-ports    top dst_port des connexions
-#   network          vue réseau : command_line + dst (--filter RE)
+#   network          vue réseau : command_line + dst (--filter "regex")
 #   dst-ports        ports + ancestors uniques par IP de destination (--all)
 #   file-extensions  extensions des chemins créés          (filter_write)
 #   file-creates     fichiers créés (--skip-benign pour masquer le bruit système)
@@ -199,7 +199,7 @@ def is_public_ip [ip: string] {
 const EVENT_QUERY = {
     execve:        'command-lines / exes / iocs'
     execve_script: 'command-lines / exes / iocs'
-    connect:       'connect-ips (--public) / connect-ports / network (--filter) / dst-ports / iocs (--public)'
+    connect:       'connect-ips (--public) / connect-ports / network (--filter "regex") / dst-ports / iocs (--public)'
     send_data:     'send-ips (--public) / send-ports / iocs (--public)'
     dns_query:     'dns / iocs'
     file_create:   'file-extensions / file-creates (--skip-benign)'
@@ -442,7 +442,7 @@ def "main dst-ports" [
 # (uniques des dst_ip / dst_port / dst_hostname / dst_public), filtrable sur command_line.
 def "main network" [
     file: string = ''     # fichier kunai .parquet / .gz / .jsonl
-    --filter: string = ''  # regex sur command_line
+    --filter: string = ''  # regex sur command_line ; ex. --filter "ssh"
     --infer-schema: int = 200000  # lignes d'inférence de schéma ndjson
 ] {
     if not (require_file $file) { return }
@@ -996,7 +996,7 @@ const REQUESTS = {
     exes:              { desc: 'palette dexecutables (1er mot command_line)', arg: '--top/--all' }
     'connect-ips':     { desc: 'top dst_ip des connexions',             arg: '--top/--all' }
     'connect-ports':   { desc: 'top dst_port des connexions',           arg: '--top/--all' }
-    network:           { desc: 'vue réseau command_line + dst connect', arg: '--filter' }
+    network:           { desc: 'vue réseau command_line + dst connect', arg: '--filter "regex"' }
     'dst-ports':       { desc: 'ports + ancestors uniques groupés par IP de destination', arg: '--top/--all' }
     'file-extensions': { desc: 'extensions des fichiers créés',         arg: '--top/--all' }
     'file-creates':    { desc: 'fichiers créés : chemin + binaire écrivain', arg: '--top/--all' }
