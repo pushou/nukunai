@@ -1,4 +1,4 @@
-# nukunai — VHS demo of the compromise detection engine (kunai_detect_compromise.nu)
+# nukunai — VHS demo: compromise detection on the NGSOTI 22e4a57 sample (perfctl miner)
 # Render with:  vhs demo_detect.tape
 # Depends on:   ttyd + ffmpeg (VHS runtime deps)
 Output images/detect.gif
@@ -19,32 +19,35 @@ Enter
 Sleep 300ms
 Show
 
-# -- 1. Run the detection engine over the NGSOTI 22e4a57 sample (all families) --
+# ----------------------------------------------------------------------------
+# 1. Run the detection engine (9 families + ioc) on the sample.
+# ----------------------------------------------------------------------------
 Type "nu kunai_detect_compromise.nu ./logs/ngsoti/22e4a57ac560ebe1eff8957906589f4dd5934ee555ebcc0f7ba613b07fad2c13/kunai.jsonl"
 Sleep 1s
 Enter
 Sleep 7s
+Ctrl+L
+Sleep 400ms
 
-# Keep the sample path handy, and grab the report dir the engine just wrote.
-Type "F=./logs/ngsoti/22e4a57ac560ebe1eff8957906589f4dd5934ee555ebcc0f7ba613b07fad2c13/kunai.jsonl"
-Enter
-Sleep 1s
+# ----------------------------------------------------------------------------
+# 2. INTRUSION FOCUS — cat the markdown report: the execve section up top
+#    shows the drop-and-run killchain (sample.bin -> oom_reaper -> perfctl
+#    -> cron persistence perfcc), a perfctl crypto-miner compromise.
+# ----------------------------------------------------------------------------
 Type "R=$(ls -td logs/ngsoti/scanresult* | head -1)"
 Enter
 Sleep 1s
+Type "cat $R/*.md"
+Sleep 800ms
+Enter
+Sleep 5s
 Ctrl+L
 Sleep 400ms
 
-# -- 2. Focus a single family (execve -> drop-and-run from /tmp) --
-Type "nu kunai_detect_compromise.nu -f execve $F"
+# ----------------------------------------------------------------------------
+# 3. The same intrusion, from the detections parquet via polars.
+# ----------------------------------------------------------------------------
+Type `nu -c "plugin use polars; polars open $R/detections_execve.parquet | polars collect"`
 Sleep 700ms
 Enter
-Sleep 6s
-Ctrl+L
-Sleep 400ms
-
-# -- 3. Show the persistent command lines captured in the markdown report --
-Type "sed -n '/^## execve/,/^## file_create/p' $R/*.md"
-Sleep 700ms
-Enter
-Sleep 3s
+Sleep 5s

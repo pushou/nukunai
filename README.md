@@ -1,12 +1,142 @@
 # nukunai
 nushell polars scripts to analyse/filter kunai logs (jsonl to parquet file).
 
-<img src="images/explore.gif" width="150%" >
+## Demo
+
+**Compromise detection** — run the engine on a raw kunai sample, then read the
+generated markdown report and the detections parquet:
+
 <img src="images/detect.gif" width="150%" >
+
+```
+# 1. run the detection engine on a sample
+nu kunai_detect_compromise.nu ./logs/ngsoti/<hash>/kunai.jsonl
+
+# 2. display the generated markdown report (script-generated, section execve up top)
+cat scanresult<TS>/<short_hash>_execve*_connect*.md
+
+# 3. re-read the same detections from the parquet, via the polars plugin
+nu -c "plugin use polars; polars open scanresult<TS>/detections_execve.parquet | polars collect"
+```
+
+**Interactive exploration** — ad-hoc queries (`kunai_queries.nu`) over a sample:
+
+<img src="images/explore.gif" width="150%" >
 
 ## requirements 
 Nushell and its blazing fast polars plugins, kunai logs (install kunai (https://github.com/kunai-project/) or see ngsoti malware dataset)
 (it offers satisfactory performance with 100MB Kunai log files) 
+
+
+## Ad-hoc queries (`kunai_queries.nu`)
+
+`kunai_queries.nu` wraps the ad-hoc oneliners (cf. the `kunai_requests.nu`
+reference architecture) into subcommands that run against a kunai
+`.parquet` / `.gz` / `.jsonl` file. Each subcommand applies the standard
+pipeline: `open_source` → `unnest data/info` + `unnest event` → filter by
+name → select only safe columns (never Int128) → unnest/rename →
+group/value-counts → sort → `collect` → `into-nu`.
+
+```
+nu kunai_queries.nu <query> <file> [--top N] [--filter RE] [--all] [--infer-schema N]
+nu kunai_queries.nu help
+nu kunai_queries.nu <query> --help   # detailed help for that subcommand
+```
+
+Each query is a **real nushell subcommand** (`main <query>`): its `--help`
+shows its own signature, flags and flag descriptions. The file can be omitted
+(graceful error via `require_file`).
+
+| query           | description                                            |
+|-----------------|--------------------------------------------------------|
+| `events`        | event count per name                                   |
+| `dns`           | DNS queries grouped by query (`--top`/`--all`)         |
+| `command-lines` | most frequent execve command_line (`--top`/`--all`)    |
+| `exes`          | executable palette (first word of command_line)        |
+| `connect-ips`   | top connection dst_ip                                  |
+| `connect-ports` | top connection dst_port                                |
+| `network`       | network view command_line + dst connect (`--filter`)   |
+| `file-extensions`| extensions of created files                           |
+| `kill-targets`  | killed targets (kill)                                  |
+| `prctl-options` | prctl options grouped (task, option)                    |
+| `file-renames`  | file renames (old → new)                                |
+| `file-unlinks`  | most unlinked paths (file_unlink)                       |
+| `mmap-execs`    | mapped RX files (`-s` filters drop-and-run tmp/fd/memfd)|
+| `bpf-progs`     | BPF programs by type + name + process                   |
+| `send-ports`    | top send_data ports                                     |
+| `send-ips`      | top send_data IPs                                       |
+
+Examples:
+
+```
+nu kunai_queries.nu events           logs/ngsoti/<hash>/kunai.jsonl.gz
+nu kunai_queries.nu connect-ips      logs/ngsoti/<hash>/kunai.jsonl.gz --top 5
+nu kunai_queries.nu dns              logs/ngsoti/<hash>/kunai.jsonl.gz --all
+nu kunai_queries.nu network          logs/ngsoti/<hash>/kunai.jsonl.gz --filter 'curl'
+```
+
+
+## Compromise detection engine (`kunai_detect_compromise.nu`)
+
+`kunai_detect_compromise.nu` is the detection engine behind the NGSOTI
+analysis. It reads kunai event files in lazy polars and produces readable
+reports.
+
+**The processing goes through the creation of a Parquet file.** The three
+source formats accepted are raw or compressed JSON lines (`.jsonl` /
+`.jsonl.gz`) and the already-flattened Parquet format (`.parquet`). A
+`.gz`/`.jsonl` input is **automatically converted to a `.parquet` file**
+(`ensure_parquet`, via `kunai_to_parquet.nu`) before analysis: it is written
+next to the source (or into `--cache-dir`), then re-read as Parquet. This is
+far faster than re-parsing the raw ndjson on every run (benchmark ~14x on a
+typical sample). A `.parquet` input is read directly, since its `data`/`info`
+fields are already flattened. The script exposes reusable procedures used by
+the example scripts below.
+
+### The 10 detection families
+
+`execve`, `file_create`, `connect`, `send_data`, `dns_query`, `kill`,
+`bpf_prog_load`, `mmap_exec`, `prctl`, `ioc` (MISP).
+
+Each line is classified as **benign** (legitimate platform noise: agents,
+standard utilities, local IPs) or **suspicious**. The process-side families
+(`execve`, `file_create`, `kill`, `bpf_prog_load`, `mmap_exec`, `prctl`) are
+judged by the **process chain**: hijackable utilities (`docker`, `chmod`,
+`curl`, `bash`…) are only benign when they come from a legitimate chain. The
+network families (`connect`/`send_data`/`dns_query`) are judged by **traffic flow** —
+destination IP reputation + port reputation, with the correlated DNS FQDN
+kept as report context — never by the process that opened the connection.
+
+### Engine usage
+
+```
+# default: the 2 most recent .gz / .parquet files
+nu kunai_detect_compromise.nu
+
+# explicit files
+nu kunai_detect_compromise.nu file1.gz file2.gz
+
+# analyse a Parquet file
+nu kunai_detect_compromise.nu kunai.jsonl.parquet
+
+# display only 1 line per family
+nu kunai_detect_compromise.nu -n 1
+
+# run a single family
+nu kunai_detect_compromise.nu -f execve
+
+# interactive dataframe display
+nu kunai_detect_compromise.nu --explore
+```
+
+Options : `--infer-schema <n>` (default 200000), `-n/--num <n>` (lines per
+family, default 20), `-f/--family <fam>` (all or one family), `-x/--explore`,
+`--no-json` (writes the markdown only), `--no-convert` (no automatic
+gz/jsonl→parquet caching), `--force-convert` (rebuild the parquet cache),
+`--cache-dir <dir>` (parquet cache location), `-p/--profile <fcts>` (active
+local allowlist functions, e.g. `dns,network`), `-N/--no-noise` (drop benign
+system noise from the report), `-I/--ioc <file>` (MISP JSONL feed for the
+`ioc` family, default `misp.iocs`).
 
 ## repository layout
 
@@ -277,53 +407,6 @@ polars open kunai.jsonl_61.parquet
 ╰───┴───────────────┴──────────┴──────────────────────────────────────────╯
 ```
 
-## Ad-hoc queries (`kunai_queries.nu`)
-
-`kunai_queries.nu` wraps the ad-hoc oneliners (cf. the `kunai_requests.nu`
-reference architecture) into subcommands that run against a kunai
-`.parquet` / `.gz` / `.jsonl` file. Each subcommand applies the standard
-pipeline: `open_source` → `unnest data/info` + `unnest event` → filter by
-name → select only safe columns (never Int128) → unnest/rename →
-group/value-counts → sort → `collect` → `into-nu`.
-
-```
-nu kunai_queries.nu <query> <file> [--top N] [--filter RE] [--all] [--infer-schema N]
-nu kunai_queries.nu help
-nu kunai_queries.nu <query> --help   # detailed help for that subcommand
-```
-
-Each query is a **real nushell subcommand** (`main <query>`): its `--help`
-shows its own signature, flags and flag descriptions. The file can be omitted
-(graceful error via `require_file`).
-
-| query           | description                                            |
-|-----------------|--------------------------------------------------------|
-| `events`        | event count per name                                   |
-| `dns`           | DNS queries grouped by query (`--top`/`--all`)         |
-| `command-lines` | most frequent execve command_line (`--top`/`--all`)    |
-| `exes`          | executable palette (first word of command_line)        |
-| `connect-ips`   | top connection dst_ip                                  |
-| `connect-ports` | top connection dst_port                                |
-| `network`       | network view command_line + dst connect (`--filter`)   |
-| `file-extensions`| extensions of created files                           |
-| `kill-targets`  | killed targets (kill)                                  |
-| `prctl-options` | prctl options grouped (task, option)                    |
-| `file-renames`  | file renames (old → new)                                |
-| `file-unlinks`  | most unlinked paths (file_unlink)                       |
-| `mmap-execs`    | mapped RX files (`-s` filters drop-and-run tmp/fd/memfd)|
-| `bpf-progs`     | BPF programs by type + name + process                   |
-| `send-ports`    | top send_data ports                                     |
-| `send-ips`      | top send_data IPs                                       |
-
-Examples:
-
-```
-nu kunai_queries.nu events           logs/ngsoti/<hash>/kunai.jsonl.gz
-nu kunai_queries.nu connect-ips      logs/ngsoti/<hash>/kunai.jsonl.gz --top 5
-nu kunai_queries.nu dns              logs/ngsoti/<hash>/kunai.jsonl.gz --all
-nu kunai_queries.nu network          logs/ngsoti/<hash>/kunai.jsonl.gz --filter 'curl'
-```
-
 ## filter command lines
 
 ```
@@ -371,68 +454,6 @@ polars open  events.log.1502.parquet
 ```
 
 ---
-
-## Compromise detection engine (`kunai_detect_compromise.nu`)
-
-`kunai_detect_compromise.nu` is the detection engine behind the NGSOTI
-analysis. It reads kunai event files in lazy polars and produces readable
-reports.
-
-**The processing goes through the creation of a Parquet file.** The three
-source formats accepted are raw or compressed JSON lines (`.jsonl` /
-`.jsonl.gz`) and the already-flattened Parquet format (`.parquet`). A
-`.gz`/`.jsonl` input is **automatically converted to a `.parquet` file**
-(`ensure_parquet`, via `kunai_to_parquet.nu`) before analysis: it is written
-next to the source (or into `--cache-dir`), then re-read as Parquet. This is
-far faster than re-parsing the raw ndjson on every run (benchmark ~14x on a
-typical sample). A `.parquet` input is read directly, since its `data`/`info`
-fields are already flattened. The script exposes reusable procedures used by
-the example scripts below.
-
-### The 10 detection families
-
-`execve`, `file_create`, `connect`, `send_data`, `dns_query`, `kill`,
-`bpf_prog_load`, `mmap_exec`, `prctl`, `ioc` (MISP).
-
-Each line is classified as **benign** (legitimate platform noise: agents,
-standard utilities, local IPs) or **suspicious**. The process-side families
-(`execve`, `file_create`, `kill`, `bpf_prog_load`, `mmap_exec`, `prctl`) are
-judged by the **process chain**: hijackable utilities (`docker`, `chmod`,
-`curl`, `bash`…) are only benign when they come from a legitimate chain. The
-network families (`connect`/`send_data`/`dns_query`) are judged by **traffic flow** —
-destination IP reputation + port reputation, with the correlated DNS FQDN
-kept as report context — never by the process that opened the connection.
-
-### Engine usage
-
-```
-# default: the 2 most recent .gz / .parquet files
-nu kunai_detect_compromise.nu
-
-# explicit files
-nu kunai_detect_compromise.nu file1.gz file2.gz
-
-# analyse a Parquet file
-nu kunai_detect_compromise.nu kunai.jsonl.parquet
-
-# display only 1 line per family
-nu kunai_detect_compromise.nu -n 1
-
-# run a single family
-nu kunai_detect_compromise.nu -f execve
-
-# interactive dataframe display
-nu kunai_detect_compromise.nu --explore
-```
-
-Options : `--infer-schema <n>` (default 200000), `-n/--num <n>` (lines per
-family, default 20), `-f/--family <fam>` (all or one family), `-x/--explore`,
-`--no-json` (writes the markdown only), `--no-convert` (no automatic
-gz/jsonl→parquet caching), `--force-convert` (rebuild the parquet cache),
-`--cache-dir <dir>` (parquet cache location), `-p/--profile <fcts>` (active
-local allowlist functions, e.g. `dns,network`), `-N/--no-noise` (drop benign
-system noise from the report), `-I/--ioc <file>` (MISP JSONL feed for the
-`ioc` family, default `misp.iocs`).
 
 ## Vendored rule repositories (submodules)
 
@@ -542,5 +563,3 @@ nu ngsoti_all.nu
 nu ngsoti_report.nu                    # output into $JCODE_SCRATCH_DIR/ngsoti_out (else ./ngsoti_out)
 nu ngsoti_report.nu my_folder          # output into my_folder
 ```
-
-

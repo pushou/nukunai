@@ -2,6 +2,8 @@
 *.parquet
 *.gz
 *.log
+kunai_to_parquet.py
+__pycache__/
 
 # Répertoire de logs analysés et résultats de scan (à ne jamais versionner)
 logs/
