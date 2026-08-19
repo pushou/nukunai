@@ -15,25 +15,26 @@
 # `<file>` peut être un `.parquet` (déjà aplati) ou un `.gz`/`.jsonl`/`.log`
 # (ndjson kunai, décompressé nativement par polars).
 #
-# Requêtes :
+# Requêtes (chaque sous-commande expose ses variantes d'options, cf. --help) :
 #   events           count d'événements par nom            (count_event_types)
 #   dns              requêtes DNS groupées par query       (requête dns)
 #   command-lines    command_line execve les plus fréquentes (view_command_lines)
 #   exes             premier mot des command_line execve    (palette d'exe)
-#   connect-ips      top dst_ip des connexions             (filter_connect)
+#   connect-ips      top dst_ip des connexions (--public)  (filter_connect)
 #   connect-ports    top dst_port des connexions
-#   network          vue réseau : command_line + dst (flatten)
-#   dst-ports        ports + ancestors uniques groupés par IP de destination (dst nested ou aplati)
+#   network          vue réseau : command_line + dst (--filter RE)
+#   dst-ports        ports + ancestors uniques par IP de destination (--all)
 #   file-extensions  extensions des chemins créés          (filter_write)
-#   file-creates     fichiers créés : chemin + binaire écrivain (--skip-benign pour masquer le bruit système)
+#   file-creates     fichiers créés (--skip-benign pour masquer le bruit système)
 #   kill-targets     cibles tuées (kill)                   (filter_kill)
 #   prctl-options    options prctl par processus
 #   file-renames     renommages old->new (file_rename)
 #   file-unlinks     fichiers supprimés (file_unlink)
-#   mmap-execs       fichiers mappés RX, drop-and-run (--mprotect -s)
+#   mmap-execs       fichiers mappés RX, drop-and-run (--suspicious --mprotect -s)
 #   bpf-progs        programmes eBPF chargés (bpf_prog_load)
 #   send-ports       top ports du send_data                (filter_send)
-#   send-ips         top IPs du send_data
+#   send-ips         top IPs du send_data (--public)
+#   iocs             vue consolidée des IOC (network/ports/dns/fichiers/exec) (--public)
 #
 # NB conventions & pièges nushell/polars documentés dans MEMORIES.md :
 #  - les Expr polars `or`/`and` s'écrivent entre parenthèses, jamais `polars or`;
@@ -190,22 +191,24 @@ def is_public_ip [ip: string] {
 
 # ------------------------------------------------ requêtes (sous-commandes)
 
-# Lien type d'événement kunai -> sous-requête de traitement (affiché par events).
-# `iocs` est la vue consolidée des IOC ; son option --public ne porte que sur
-# l'égression réseau (connect/send_data), d'où l'annotation sur ces lignes.
+# Lien type d'événement kunai -> sous-requête + variantes d'options (affiché par events).
+# Chaque sous-commande liste ici les options réelles qu'elle expose (--public,
+# --skip-benign, --suspicious/--mprotect, --filter…), pour qu'on les voie d'un coup
+# d'œil. `iocs` est la vue consolidée ; son --public ne porte que sur l'égression
+# réseau (connect/send_data), d'où l'annotation sur ces lignes.
 const EVENT_QUERY = {
     execve:        'command-lines / exes / iocs'
     execve_script: 'command-lines / exes / iocs'
-    connect:       'connect-ips / connect-ports / network / dst-ports / iocs (--public)'
-    send_data:     'send-ips / send-ports / iocs (--public)'
+    connect:       'connect-ips (--public) / connect-ports / network (--filter) / dst-ports / iocs (--public)'
+    send_data:     'send-ips (--public) / send-ports / iocs (--public)'
     dns_query:     'dns / iocs'
-    file_create:   'file-extensions / file-creates'
+    file_create:   'file-extensions / file-creates (--skip-benign)'
     kill:          'kill-targets'
     prctl:         'prctl-options'
     file_rename:   'file-renames'
     file_unlink:   'file-unlinks'
-    mmap_exec:     'mmap-execs (--mprotect) / iocs'
-    mprotect_exec: 'mmap-execs (--mprotect) / iocs'
+    mmap_exec:     'mmap-execs (--suspicious --mprotect) / iocs'
+    mprotect_exec: 'mmap-execs (--suspicious --mprotect) / iocs'
     bpf_prog_load: 'bpf-progs'
 }
 
