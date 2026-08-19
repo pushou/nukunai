@@ -566,6 +566,11 @@ nu ngsoti_report.nu my_folder          # output into my_folder
 ```
 
 
-## source of inspiration
+## Source of Inspiration
 
 https://github.com/digisquad-repo/kunai-rules.git
+
+## Model
+
+* Initial version: Mine
+* Enhancements: DeepSeekV4-Flash
