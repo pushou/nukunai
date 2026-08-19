@@ -58,8 +58,8 @@ cat  /var/log/kunai/events.log
    | group-by   event_name --to-table
    | where event_name == "execve"
    | explore
-# selection sur events
-# requête dns
+# selection on events
+# dns query
 cat  /var/log/kunai/events.log 
    | from json --objects
    | filter {$in.info.event.name == "dns_query"} 
