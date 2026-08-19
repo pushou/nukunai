@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """kunai_to_parquet.py — Python port of kunai_to_parquet.nu (polars kept).
 
-Convert a kunai events log (ndjson brut .jsonl ou compressé .gz) to a
+Convert a kunai events log (raw .jsonl ndjson or compressed .gz) to a
 Parquet file. Lazy is the default: the ndjson parsing + schema inference
 happen only once and a .gz is read directly, without any temporary file.
 
@@ -118,8 +118,8 @@ def main(
                 print(f"conversion failed: {err}")
                 sys.exit(1)
             print(
-                f"unzipped - non destructif - depuis {kunai_events_log_file} "
-                f"vers {temp_unzipped}"
+                f"unzipped - non destructive - from {kunai_events_log_file} "
+                f"to {temp_unzipped}"
             )
             try:
                 save_into_parquet(
